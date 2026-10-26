@@ -24,8 +24,8 @@
                 }
 
                 <div class="mb-3">
-                    <label class="form-label">Username / JID (Contoh: budi@@openfire)</label>
-                    <input type="text" class="form-control" @bind="InputJid" placeholder="budi@@openfire" disabled="@SedangLoading" />
+                    <label class="form-label">Username / JID (Contoh: budi@@domain.Budi)</label>
+                    <input type="text" pattern="^[^\s@@]+@@[^\s@@]+$" class="form-control" @bind="InputJid" placeholder="budi@@openfire" disabled="@SedangLoading" />
                 </div>
 
                 <div class="mb-3">
@@ -55,7 +55,6 @@
     private string PesanSukses = "";
     private bool SedangLoading = false;
     private string StatusSekarang = "";
-    private int counter = 0;
     private IDisposable? _subState;
 
     private async Task ProsesLogin()
@@ -84,7 +83,6 @@
 
                 if (state == SessionState.Binded)
                 {
-                    counter++;
                     PesanError = string.Empty;
                     PesanSukses = "Login Berhasil";
                     SedangLoading = false;
@@ -98,30 +96,25 @@
                     }
                     catch (Exception exPres)
                     {
+                        PesanError = $"Gagal kirim status online: {exPres.Message}";
                         Console.WriteLine($"Gagal kirim status online: {exPres.Message}");
                     }
 
+                    await InvokeAsync(StateHasChanged);
 
-                    if (!string.IsNullOrEmpty(PesanError) && !SedangLoading)
-                    {
-                        Console.WriteLine("Pesannya: '" + PesanError + $"' is {string.IsNullOrEmpty(PesanError)} with counter {counter}");
-                        await InvokeAsync(StateHasChanged);
-                    }
-                    else
-                    {
-                        Console.WriteLine("Sudah sukses pun dianggep error ceunah.");
-                    }
+                    await Task.Delay(500);
+
                     await InvokeAsync(() =>
                     {
                         NavManager.NavigateTo("/chatview");
                     });
                 }
-                else if (state == SessionState.Disconnected && SedangLoading)
+                else if (state == SessionState.Authenticating)
                 {
-                    counter++;
-                    PesanError = "Gagal terhubung. Periksa kembali kredensial atau koneksi server Openfire Anda.";
-                    Console.WriteLine("Pesannya Disconnect: " + PesanError);
-                    SedangLoading = false;
+                    SedangLoading = true;
+                    PesanError = "";
+                    PesanSukses = "Silahkan Tunggu";
+                    Console.WriteLine("Pesannya Connecting: " + PesanSukses);
                     await InvokeAsync(StateHasChanged);
                 }
             });
@@ -130,8 +123,10 @@
         }
         catch (Exception ex)
         {
-            PesanError = $"Gagal memicu koneksi: {ex.Message}";
+            PesanSukses = "";
+            PesanError = "Gagal terhubung. Periksa kembali kredensial atau koneksi server Openfire Anda. Pastikan Jid berformat 'username@domain' dan password sudah benar.";
             SedangLoading = false;
+            await InvokeAsync(StateHasChanged);
         }
     }
 
