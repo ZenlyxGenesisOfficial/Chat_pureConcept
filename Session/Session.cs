@@ -19,5 +19,9 @@ namespace chat.Session
 
         public event Action? OnChange;
         public void NotifyStateChanged() => OnChange?.Invoke();
+
+        public Dictionary<string, string>? Contacts { get; set; }
+        public List<string>? ContactsName { get; set; }
+
     }
 }

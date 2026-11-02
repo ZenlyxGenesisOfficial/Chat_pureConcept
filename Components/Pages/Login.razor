@@ -1,10 +1,12 @@
 ﻿@page "/"
 @using XmppDotNet
+@using System.Xml.Linq
 @using System.Reactive.Linq
 @implements IDisposable
 @inject XmppClient XmppService
 @inject NavigationManager NavManager
 @inject chat.Session.UserSession UserSession
+@inject Microsoft.Extensions.Configuration.IConfiguration Config
 @rendermode InteractiveServer
 
 <div class="container flex justify-center items-center h-full">
@@ -102,7 +104,9 @@
 
                     await InvokeAsync(StateHasChanged);
 
-                    await Task.Delay(500);
+                    await CariSemuaKontak();
+
+                    await Task.Delay(Convert.ToInt32(Config["WebKitX:RedirectDelay"]));
 
                     await InvokeAsync(() =>
                     {
@@ -133,10 +137,63 @@
     private async Task KirimPresenceOnline()
     {
         var presenceElement = new XmppDotNet.Xml.XmppXElement("presence");
+        var priorityElement = new XmppDotNet.Xml.XmppXElement("priority") { Value = "1" };
         var showElement = new XmppDotNet.Xml.XmppXElement("show") { Value = "chat" };
+        presenceElement.Add(priorityElement);
         presenceElement.Add(showElement);
         await XmppService.SendAsync(presenceElement);
     }
+
+    private async Task CariSemuaKontak()
+    {
+        try
+        {
+            var iqRequest = new XmppDotNet.Xmpp.Client.Iq
+            {
+                Type = XmppDotNet.Xmpp.IqType.Get,
+                Id = $"roster_{Guid.NewGuid().ToString()[..8]}"
+            };
+
+            System.Xml.Linq.XNamespace rosterNs = "jabber:iq:roster";
+            var queryElement = new XmppDotNet.Xml.XmppXElement(rosterNs + "query");
+            iqRequest.Add(queryElement);
+
+            var responsed = await XmppService.SendIqAsync(iqRequest);
+
+            if (responsed.Type == XmppDotNet.Xmpp.IqType.Error)
+            {
+                Console.WriteLine("Gagal mengambil roster dari server.");
+                return;
+            }
+
+            var queryRespon = responsed.Element(rosterNs + "query");
+
+            if (queryRespon != null)
+            {
+                UserSession.Contacts = new Dictionary<string, string>();
+                UserSession.ContactsName = new List<string>();
+                var items = queryRespon.Elements(rosterNs + "item");
+
+                foreach (var item in items)
+                {
+                    string userJid = item.Attribute("jid")?.Value!;
+                    string username = item.Attribute("name")?.Value ?? userJid!;
+
+                    if (!string.IsNullOrEmpty(userJid))
+                    {
+                        UserSession.Contacts[userJid] = username;
+                        UserSession.ContactsName.Add(username);
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"Terjadi error saat ambil roster: {e.Message}");
+        }
+    }
+
+
 
     public void Dispose()
     {

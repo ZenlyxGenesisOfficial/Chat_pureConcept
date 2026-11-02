@@ -1,5 +1,6 @@
 ﻿@page "/chatview"
 @using XmppDotNet
+@using System.Linq
 @using System.Xml.Linq
 @using System.Reactive.Linq
 @using System.Reactive.Disposables
@@ -16,9 +17,9 @@
     <strong>As: </strong> @UserSession.Jid.Split('@')[0]
 </div>
 
-<div class="row">
-    <div class="col-md-4">
-        <div class="card p-3">
+<div class="flex flex-row gap-4 w-full gap-3">
+    <div class="flex flex-col grow-[1] basis-0 gap-4">
+        <div class="card p-3 grow">
             <h5>Mulai Percakapan</h5>
             <div class="mb-3">
                 <label class="form-label">Masukkan JID Teman (@(string.IsNullOrEmpty(JidTemanTerpilih) ? "Username" : JidTemanTerpilih)):</label>
@@ -28,9 +29,22 @@
                 Ketik langsung JID teman di atas untuk mulai chat secara dinamis.
             </p>
         </div>
+        <div class="card p-3 max-h-[280px] self-start shrink-0">
+            <h5>Semua Kontak</h5>
+            <div class="mb-3">
+                <label class="form-label">JID Teman:</label>
+            </div>
+            <div class="max-h-[140px] self-start shrink-0 overflow-y-scroll scrollbar-hide">
+                @foreach (var kontak in Contacts)
+                {
+                    <p class="text-muted">
+                        @(kontak)
+                    </p>
+                }
+            </div>
+        </div>
     </div>
-
-    <div class="col-md-8">
+    <div class="grow-[3] basis-0">
         <div class="card p-3">
             <h5>Jendela Obrolan: @(string.IsNullOrEmpty(JidTemanTerpilih) ? "Masukkan JID Teman" : JidTemanTerpilih)</h5>
 
@@ -41,12 +55,14 @@
                 }
                 @foreach (var chat in ListObrolan)
                 {
-                    <div class="mb-2">
-                        <span class="badge @(chat.ApakahSaya ? "bg-primary" : "bg-secondary")">
-                            @(chat.ApakahSaya ? "Saya" : chat.Nama)
-                        </span>
-                        <small class="text-muted">@chat.Waktu</small>
-                        <p class="p-2 rounded bg-white border shadow-sm">@chat.Teks</p>
+                    <div class="flex @(chat.ApakahSaya ? "justify-end" : "justify-start")">
+                        <div class="mb-2 max-w-[560px] flex flex-col @(chat.ApakahSaya ? "items-end" : "items-start")">
+                            <span class="badge size-fit @(chat.ApakahSaya ? "bg-primary" : "bg-secondary")">
+                                @(chat.ApakahSaya ? "Saya" : chat.Nama)
+                            </span>
+                            <small class="text-muted)">@chat.Waktu</small>
+                            <p class="p-2 rounded bg-white min-w-[80px] size-fit border shadow-sm @(chat.ApakahSaya ? "text-end" : "  text-start")">@chat.Teks</p>
+                        </div>
                     </div>
                 }
             </div>
@@ -64,6 +80,7 @@
     private string StatusKoneksi = "Mencoba mengenali jaringan...";
     private string JidTemanTerpilih = "";
     private string TeksInputPesan = "";
+    public List<string> Contacts => UserSession.ContactsName ?? new List<string>();
     private List<ModelPesan> ListObrolan = new List<ModelPesan>();
 
     private readonly CompositeDisposable _disposables = new CompositeDisposable();
@@ -72,15 +89,19 @@
     {
         if (UserSession.Jid != "" && UserSession.Password != "")
         {
-            Console.WriteLine("Sebenernya UserService nya ga null A.K.A terisi, liat aja nih:");
+            Console.WriteLine("Verifikasi berhasil");
             Console.WriteLine("Jid: " + UserSession.Jid);
             Console.WriteLine("Password: " + UserSession.Password);
+            foreach (var e in UserSession.Contacts ?? new Dictionary<string, string>())
+            {
+                Console.WriteLine($"Kontak: {e.Key}");
+            }
         }
         else
         {
             Console.WriteLine("gagal king");
-            Console.WriteLine("Jid: "+UserSession.Jid);
-            Console.WriteLine("Password: "+UserSession.Password);
+            Console.WriteLine("Jid: " + UserSession.Jid);
+            Console.WriteLine("Password: " + UserSession.Password);
             NavManager.NavigateTo("/");
             return;
         }
@@ -118,7 +139,7 @@
                                 Teks = isiChat,
                                 ApakahSaya = false,
                                 Nama = JidTemanTerpilih.Split(".")[0],
-                                Waktu = DateTime.Now.ToString("HH:mm")
+                                Waktu = DateTime.Now.ToString("HH:mm:ss - dd/MM/yyyy")
                             });
                             InvokeAsync(StateHasChanged);
                         }
@@ -151,7 +172,7 @@
             {
                 Teks = pesanKirim,
                 ApakahSaya = true,
-                Waktu = DateTime.Now.ToString("HH:mm")
+                Waktu = DateTime.Now.ToString("HH:mm:ss - dd/MM/yyyy")
             });
 
             StateHasChanged();
