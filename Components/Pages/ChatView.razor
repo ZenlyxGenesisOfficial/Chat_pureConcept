@@ -4,10 +4,15 @@
 @using System.Xml.Linq
 @using System.Reactive.Linq
 @using System.Reactive.Disposables
+@using System.Text.Json
+@using XmppDotNet.Xmpp
+@using XmppDotNet.Xmpp.Client;
 @implements IDisposable
 @inject chat.Session.UserSession UserSession
 @inject XmppClient XmppService
 @inject NavigationManager NavManager
+@inject Microsoft.Extensions.Configuration.IConfiguration Config
+@inject IJSRuntime JS
 @rendermode InteractiveServer
 
 <h3>Aplikasi Kolaborasi Chat - Internet Hosting</h3>
@@ -17,38 +22,39 @@
     <strong>As: </strong> @UserSession.Jid.Split('@')[0]
 </div>
 
-<div class="flex flex-row gap-4 w-full gap-3">
+<div class="flex flex-row gap-4 w-full gap-3 h-[400px]">
     <div class="flex flex-col grow-[1] basis-0 gap-4">
-        <div class="card p-3 grow">
-            <h5>Mulai Percakapan</h5>
-            <div class="mb-3">
-                <label class="form-label">Masukkan JID Teman (@(string.IsNullOrEmpty(JidTemanTerpilih) ? "Username" : JidTemanTerpilih)):</label>
-                <input type="text" class="form-control" @bind="JidTemanTerpilih" placeholder="username tanpa '@@openfire'" />
-            </div>
-            <p class="text-muted small">
-                Ketik langsung JID teman di atas untuk mulai chat secara dinamis.
-            </p>
-        </div>
-        <div class="card p-3 max-h-[280px] self-start shrink-0">
+        <div class="card p-3 self-start flex flex-1">
             <h5>Semua Kontak</h5>
             <div class="mb-3">
-                <label class="form-label">JID Teman:</label>
+                <label class="form-label">Masukkan JID Teman (Manual):</label>
+                <div class="input-group">
+                    <input type="text" class="form-control" @bind="@JidTemanTertulis" @oninput="MenulisJiD" placeholder="tanpa '@@openfire'" />
+                    <button class="btn btn-primary" @onclick="ClearConnect">
+                        @(BtnClearType ? "Clear" : "Connect")
+                    </button>
+                </div>
             </div>
-            <div class="max-h-[140px] self-start shrink-0 overflow-y-scroll scrollbar-hide">
+            <div>
+                <label class="form-label">Daftar JID Teman:</label>
+            </div>
+            <div class="flex-1 max-h-[285px] self-start shrink-0 overflow-y-scroll scrollbar-hide border border-black rounded-md p-2 w-full">
                 @foreach (var kontak in Contacts)
                 {
-                    <p class="text-muted">
-                        @(kontak)
-                    </p>
+                    <div class="text-muted bg-neutral-200 mb-1 w-full p-1">
+                        <button class="border border-white-2 w-full text-start" @onclick='() => SetTeman(UserSession.Contacts[kontak].Split("@@")[0])'>
+                            @(kontak)
+                        </button>
+                    </div>
                 }
             </div>
         </div>
     </div>
-    <div class="grow-[3] basis-0">
-        <div class="card p-3">
-            <h5>Jendela Obrolan: @(string.IsNullOrEmpty(JidTemanTerpilih) ? "Masukkan JID Teman" : JidTemanTerpilih)</h5>
+    <div class="grow-[3] basis-0 h-full">
+        <div class="card p-3 flex flex-col h-full">
+            <h5>Chat: >@(string.IsNullOrEmpty(JidTemanTerpilih) ? "" : JidTemanTerpilih) (@(TargetOnline ? "Online" : "Offline"))</h5>
 
-            <div class="border p-3 bg-light mb-3" style="height: 300px; overflow-y: auto;">
+            <div id="ChatPopUp" class="border p-3 bg-light mb-3 grow" style="height: 375px; overflow-y: auto;">
                 @if (ListObrolan.Count == 0)
                 {
                     <div class="text-muted text-center pt-5">Belum ada percakapan...</div>
@@ -70,7 +76,7 @@
             <div class="input-group">
                 <input type="text" class="form-control" placeholder="Ketik pesan di sini..."
                        @bind="TeksInputPesan" @onkeyup="HandleKeyDown" disabled="@string.IsNullOrEmpty(JidTemanTerpilih)" />
-                <button class="btn btn-primary" @onclick="KirimPesan" disabled="@string.IsNullOrEmpty(JidTemanTerpilih)">Kirim</button>
+                <button class="btn btn-primary" @onclick="KirimPesan" disabled="@string.IsNullOrEmpty(JidTemanTerpilih)">@(TargetOnline ? "Kirim" : "Chat-Off")</button>
             </div>
         </div>
     </div>
@@ -80,7 +86,16 @@
     private string StatusKoneksi = "Mencoba mengenali jaringan...";
     private string JidTemanTerpilih = "";
     private string TeksInputPesan = "";
-    public List<string> Contacts => UserSession.ContactsName ?? new List<string>();
+    private string JidTemanTertulis = string.Empty;
+    private bool TargetOnline = false;
+    private bool BtnClearType = false;
+    public List<string> Contacts => UserSession.ContactsName?.Where(x =>
+    {
+        return (x.ToLower().Contains(JidTemanTertulis.ToLower())) ||
+        (UserSession.Contacts.FirstOrDefault(y => y.Key == x).Value.ToLower().Contains(JidTemanTertulis.ToLower())) ||
+        (JidTemanTertulis == "");
+    }).ToList<String>() ?? new List<string>();
+
     private List<ModelPesan> ListObrolan = new List<ModelPesan>();
 
     private readonly CompositeDisposable _disposables = new CompositeDisposable();
@@ -92,10 +107,6 @@
             Console.WriteLine("Verifikasi berhasil");
             Console.WriteLine("Jid: " + UserSession.Jid);
             Console.WriteLine("Password: " + UserSession.Password);
-            foreach (var e in UserSession.Contacts ?? new Dictionary<string, string>())
-            {
-                Console.WriteLine($"Kontak: {e.Key}");
-            }
         }
         else
         {
@@ -114,7 +125,7 @@
 
         var subChat = XmppService.XmppXElementReceived
             .Where(element => element.Name.LocalName == "message")
-            .Subscribe(element =>
+            .Subscribe(async element =>
             {
                 XElement xmlElement = element as XElement;
                 if (xmlElement != null)
@@ -129,29 +140,136 @@
                             dariOrang = dariOrang.Split('/')[0];
                         }
 
+                        dariOrang = dariOrang.Split("@")[0];
+
                         string isiChat = bodyNode.Value;
 
-                        if (!string.IsNullOrEmpty(JidTemanTerpilih) &&
-                            dariOrang.Equals(JidTemanTerpilih.Trim() + "@openfire", StringComparison.OrdinalIgnoreCase))
+                        if (dariOrang == JidTemanTerpilih)
                         {
                             ListObrolan.Add(new ModelPesan
                             {
                                 Teks = isiChat,
                                 ApakahSaya = false,
-                                Nama = JidTemanTerpilih.Split(".")[0],
+                                Nama = dariOrang.Split(".")[0],
                                 Waktu = DateTime.Now.ToString("HH:mm:ss - dd/MM/yyyy")
                             });
-                            InvokeAsync(StateHasChanged);
                         }
+
+                        var ChatJson = await JS.InvokeAsync<string>("localStorage.getItem", "chat@" + dariOrang + $"@{UserSession.Jid.Split("@")[0]}") ?? "[]";
+                        var ListTmp = JsonSerializer.Deserialize<List<ModelPesan>>(ChatJson) ?? new List<ModelPesan>();
+                        ListTmp.Add(new ModelPesan
+                        {
+                            Teks = isiChat,
+                            ApakahSaya = false,
+                            Nama = dariOrang.Split(".")[0],
+                            Waktu = DateTime.Now.ToString("HH:mm:ss - dd/MM/yyyy")
+                        });
+                        ChatJson = JsonSerializer.Serialize(ListTmp);
+                        await JS.InvokeVoidAsync("localStorage.setItem", "chat@" + dariOrang + $"@{UserSession.Jid.Split("@")[0]}", ChatJson);
+                        BtnClearType = true;
+                        await InvokeAsync(StateHasChanged);
+
+                        await JS.InvokeVoidAsync("scrollToBottom", "ChatPopUp", true);
                     }
                 }
             });
         _disposables.Add(subChat);
+
+        XmppService.XmppXElementReceived
+        .Where(el => el is Presence) // Mengecek apakah elemen XML yang masuk adalah objek Presence
+        .Cast<Presence>()            // Mengubah tipe data menjadi objek Presence murni
+        .Subscribe(async presence =>
+        {
+            try
+            {
+                if (presence?.From == null) return;
+
+                // Ambil JID bersih (misal: budi@domain.com)
+                string bareJid = presence.From.Bare;
+
+                // Cek status Kehadiran (Presence)
+                if (presence.Type == PresenceType.Unavailable)
+                {
+                    UserSession.LoginStatus![bareJid] = false;
+                    Console.WriteLine($"[STATUS] {bareJid} sekarang OFFLINE");
+                }
+                else
+                {
+                    UserSession.LoginStatus![bareJid] = true;
+                    Console.WriteLine($"[STATUS] {bareJid} sekarang ONLINE");
+                }
+
+                // Agar pemrosesan stream tidak terhambat oleh antrean render UI Blazor yang berat,
+                // jalankan pembaruan UI secara asinkron tanpa ditunggu (fire-and-forget)
+                _ = InvokeAsync(StateHasChanged);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Gagal memproses presence: {ex.Message}");
+            }
+        });
+    }
+
+    private async Task RefreshTarget()
+    {
+        if (UserSession.LoginStatus!.ContainsKey(JidTemanTerpilih))
+        {
+            if (UserSession.LoginStatus![JidTemanTerpilih])
+            {
+                TargetOnline = true;
+                await InvokeAsync(StateHasChanged);
+            }
+            else
+            {
+                TargetOnline = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        else
+        {
+            TargetOnline = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async void SetTeman(string Nama)
+    {
+        JidTemanTerpilih = Nama;
+        JidTemanTertulis = Nama;
+        BtnClearType = true;
+        var ChatJson = await JS.InvokeAsync<string>("localStorage.getItem", "chat@" + JidTemanTerpilih + $"@{UserSession.Jid.Split("@")[0]}") ?? "[]";
+        ListObrolan = JsonSerializer.Deserialize<List<ModelPesan>>(ChatJson) ?? new List<ModelPesan>();
+        await RefreshTarget();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void MenulisJiD(ChangeEventArgs val)
+    {
+        JidTemanTertulis = val.Value?.ToString() ?? "";
+        BtnClearType = false;
+    }
+
+    private async Task ClearConnect()
+    {
+        if (BtnClearType)
+        {
+            JidTemanTertulis = "";
+            BtnClearType = false;
+        }
+        else
+        {
+            JidTemanTerpilih = JidTemanTertulis;
+            var ChatJson = await JS.InvokeAsync<string>("localStorage.getItem", "chat@" + JidTemanTerpilih + $"@{UserSession.Jid.Split("@")[0]}") ?? "[]";
+            ListObrolan = JsonSerializer.Deserialize<List<ModelPesan>>(ChatJson) ?? new List<ModelPesan>();
+            BtnClearType = true;
+            await RefreshTarget();
+        }
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task KirimPesan()
     {
-        if (!string.IsNullOrEmpty(TeksInputPesan) && !string.IsNullOrEmpty(JidTemanTerpilih))
+        if (!string.IsNullOrEmpty(TeksInputPesan) && !string.IsNullOrEmpty(JidTemanTerpilih) && TargetOnline)
         {
             string targetJid = JidTemanTerpilih.Trim() + "@openfire";
             string pesanKirim = TeksInputPesan;
@@ -176,6 +294,22 @@
             });
 
             StateHasChanged();
+
+            await Task.Delay(Convert.ToInt32(Config["WebKitX:ChatDelay"]));
+
+            var ChatJson = await JS.InvokeAsync<string>("localStorage.getItem", "chat@" + JidTemanTerpilih + $"@{UserSession.Jid.Split("@")[0]}") ?? "[]";
+            var ListTmp = JsonSerializer.Deserialize<List<ModelPesan>>(ChatJson) ?? new List<ModelPesan>();
+            ListTmp.Add(new ModelPesan
+            {
+                Teks = pesanKirim,
+                ApakahSaya = true,
+                Nama = JidTemanTerpilih.Split(".")[0],
+                Waktu = DateTime.Now.ToString("HH:mm:ss - dd/MM/yyyy")
+            });
+            ChatJson = JsonSerializer.Serialize(ListTmp);
+            await JS.InvokeVoidAsync("localStorage.setItem", "chat@" + JidTemanTerpilih + $"@{UserSession.Jid.Split("@")[0]}", ChatJson);
+
+            JS.InvokeVoidAsync("scrollToBottom", "ChatPopUp");
         }
     }
 

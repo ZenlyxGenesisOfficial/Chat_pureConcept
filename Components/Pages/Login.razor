@@ -181,9 +181,10 @@
 
                     if (!string.IsNullOrEmpty(userJid))
                     {
-                        UserSession.Contacts[userJid] = username;
+                        UserSession.Contacts[username] = userJid;
                         UserSession.ContactsName.Add(username);
                     }
+                    UserSession.ContactsName.Sort();
                 }
             }
         }

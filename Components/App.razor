@@ -23,4 +23,19 @@
     <script src="@Assets["_framework/blazor.web.js"]"></script>
 </body>
 
+<script>
+    window.scrollToBottom = (elementId, ignorable) => {
+        const el = document.getElementById(elementId);
+        if (el) {
+            if (ignorable){
+                if ((el.scrollHeight-el.scrollTop) <= 24){
+                    el.scrollTop = el.scrollHeight - el.clientHeight;
+                }
+            }else{
+                el.scrollTop = el.scrollHeight - el.clientHeight;
+            }
+        }
+    };
+</script>
+
 </html>
