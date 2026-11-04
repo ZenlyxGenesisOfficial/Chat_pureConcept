@@ -41,8 +41,16 @@
             <div class="flex-1 max-h-[285px] self-start shrink-0 overflow-y-scroll scrollbar-hide border border-black rounded-md p-2 w-full">
                 @foreach (var kontak in Contacts)
                 {
-                    <div class="text-muted bg-neutral-200 mb-1 w-full p-1">
-                        <button class="border border-white-2 w-full text-start" @onclick='() => SetTeman(UserSession.Contacts[kontak].Split("@@")[0])'>
+                    bool isOnline = false;
+
+                    // 2. Gunakan TryValue dengan aman di dalam blok C#
+                    if (UserSession.LoginStatus != null)
+                    {
+                        UserSession.LoginStatus.TryGetValue(kontak, out isOnline);
+                    }
+
+                    <div class="text-muted @((isOnline) ? "bg-emerald-700/80" : "bg-neutral-200") mb-1 w-full p-1">
+                        <button class="pl-1 box-border border @((isOnline) ? "border-white !text-white/70" : "!border-rose-600/80") w-full text-start" @onclick='() => SetTeman(UserSession.Contacts[kontak].Split("@@")[0])'>
                             @(kontak)
                         </button>
                     </div>
@@ -52,7 +60,7 @@
     </div>
     <div class="grow-[3] basis-0 h-full">
         <div class="card p-3 flex flex-col h-full">
-            <h5>Chat: >@(string.IsNullOrEmpty(JidTemanTerpilih) ? "" : JidTemanTerpilih) (@(TargetOnline ? "Online" : "Offline"))</h5>
+            <h5>Chat/:>@(string.IsNullOrEmpty(JidTemanTerpilih) ? "" : JidTemanTerpilih) (@(TargetOnline ? "Online" : "Offline"))</h5>
 
             <div id="ChatPopUp" class="border p-3 bg-light mb-3 grow" style="height: 375px; overflow-y: auto;">
                 @if (ListObrolan.Count == 0)
@@ -83,6 +91,7 @@
 </div>
 
 @code {
+    private CancellationTokenSource _cts = new CancellationTokenSource();
     private string StatusKoneksi = "Mencoba mengenali jaringan...";
     private string JidTemanTerpilih = "";
     private string TeksInputPesan = "";
@@ -94,13 +103,13 @@
         return (x.ToLower().Contains(JidTemanTertulis.ToLower())) ||
         (UserSession.Contacts.FirstOrDefault(y => y.Key == x).Value.ToLower().Contains(JidTemanTertulis.ToLower())) ||
         (JidTemanTertulis == "");
-    }).ToList<String>() ?? new List<string>();
+    }).OrderByDescending(k => UserSession.LoginStatus!.GetValueOrDefault(k, false)).ToList<String>() ?? new List<string>();
 
     private List<ModelPesan> ListObrolan = new List<ModelPesan>();
 
     private readonly CompositeDisposable _disposables = new CompositeDisposable();
 
-    protected override void OnInitialized()
+    protected override async void OnInitialized()
     {
         if (UserSession.Jid != "" && UserSession.Password != "")
         {
@@ -175,46 +184,151 @@
             });
         _disposables.Add(subChat);
 
-        XmppService.XmppXElementReceived
-        .Where(el => el is Presence) // Mengecek apakah elemen XML yang masuk adalah objek Presence
-        .Cast<Presence>()            // Mengubah tipe data menjadi objek Presence murni
-        .Subscribe(async presence =>
+        _ = RefreshAllStatus(_cts.Token);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    public async Task RefreshAllStatus(CancellationToken cancellationToken)
+    {
+        // Berhenti otomatis jika token dibatalkan (saat refresh/dispose)
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var contactNames = UserSession.ContactsName?.ToList();
+            if (contactNames == null || !contactNames.Any())
+            {
+                // Jika kontak kosong, tunggu sebentar lalu cek lagi
+                await Task.Delay(2000, cancellationToken);
+                continue;
+            }
+
+            // AMAN & EFISIEN: Jangan pakai Task.WhenAll untuk puluhan kontak secara brutal.
+            // Kita proses satu per satu dengan cepat (Sequential Async) agar server & antrean XMPP tidak macet.
+            foreach (var cntctNm in contactNames)
+            {
+                if (cancellationToken.IsCancellationRequested) break;
+
+                try
+                {
+                    string targetJid = UserSession.Contacts![cntctNm];
+                    int timeoutSec = Convert.ToInt32(Config["WebKitX:PingTimeout_Seconds"] ?? "3");
+
+                    // Jalankan cek status
+                    bool onlineStatus = await StatusCheckUp(targetJid, TimeSpan.FromSeconds(timeoutSec));
+
+                    // OPTIMASI UI: Hanya panggil StateHasChanged JIKA statusnya MEMANG BERUBAH.
+                    // Ini 100% menghilangkan efek UI berkedip/flashing.
+                    if (!UserSession.LoginStatus!.ContainsKey(cntctNm) || UserSession.LoginStatus[cntctNm] != onlineStatus)
+                    {
+                        UserSession.LoginStatus[cntctNm] = onlineStatus;
+                        Console.WriteLine($"{UserSession.Jid} memperbarui status {cntctNm} -> {(onlineStatus ? "ONLINE" : "OFFLINE")}");
+                        
+                        await InvokeAsync(StateHasChanged);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Gagal ping untuk {cntctNm}: {ex.Message}");
+                }
+            }
+
+            await RefreshTarget();
+
+            try
+            {
+                // Jeda antar perulangan (Ambil dari Config, misal 10-15 detik adalah angka aman)
+                int delaySeconds = Convert.ToInt32(Config["WebKitX:CheckUpStatusSchedule_Seconds"] ?? "10");
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
+            }
+            catch (TaskCanceledException)
+            {
+                break; // Keluar loop jika di-refresh saat masa tunggu Delay
+            }
+        }
+    }
+
+
+    public async Task<bool> StatusCheckUp(string targetBareJid, TimeSpan timeout)
+    {
+        string id = "last_" + Guid.NewGuid().ToString("N")[..8];
+        var tcs = new TaskCompletionSource<bool>();
+
+        // Menggunakan blok 'using' untuk MENJAMIN subskripsi Rx langsung hancur 
+        // begitu method selesai (Mencegah Zombie Thread & Memory Leak)
+        using (XmppService.XmppXElementReceived
+            .Where(el => el is Iq)
+            .Cast<Iq>()
+            .Where(iq => iq.Id == id)
+            .Subscribe(iq =>
+            {
+                try
+                {
+                    string typeAttr = iq.Attribute("type")?.Value?.ToLower() ?? "";
+
+                    if (typeAttr == "result")
+                    {
+                        var queryEl = iq.Element(XName.Get("query", "jabber:iq:last"));
+                        string? secondsStr = queryEl?.Attribute("seconds")?.Value;
+
+                        if (!string.IsNullOrEmpty(secondsStr) && long.TryParse(secondsStr, out long seconds))
+                        {
+                            // seconds == 0 artinya user sedang aktif detik ini (ONLINE)
+                            tcs.TrySetResult(seconds == 0);
+                        }
+                        else
+                        {
+                            // OPTIMASI UTAMA: Jika Openfire mengirim 'result' tanpa atribut seconds
+                            // (biasanya terjadi saat tab ditutup/ghost session), anggap OFFLINE (false).
+                            tcs.TrySetResult(false);
+                        }
+                    }
+                    else
+                    {
+                        // Jika type="error" (User tidak ditemukan/terputus), anggap OFFLINE
+                        tcs.TrySetResult(false);
+                    }
+                }
+                catch
+                {
+                    tcs.TrySetResult(false);
+                }
+            }))
         {
             try
             {
-                if (presence?.From == null) return;
+                string lastXml = $"<iq from='{UserSession.Jid}' to='{targetBareJid}' id='{id}' type='get'><query xmlns='jabber:iq:last'/></iq>";
+                var element = System.Xml.Linq.XElement.Parse(lastXml);
+                var xmppElement = new XmppDotNet.Xml.XmppXElement(element);
 
-                // Ambil JID bersih (misal: budi@domain.com)
-                string bareJid = presence.From.Bare;
+                await XmppService.SendAsync(xmppElement);
 
-                // Cek status Kehadiran (Presence)
-                if (presence.Type == PresenceType.Unavailable)
+                var delayTask = Task.Delay(timeout);
+                var completedTask = await Task.WhenAny(tcs.Task, delayTask);
+
+                if (completedTask == delayTask)
                 {
-                    UserSession.LoginStatus![bareJid] = false;
-                    Console.WriteLine($"[STATUS] {bareJid} sekarang OFFLINE");
-                }
-                else
-                {
-                    UserSession.LoginStatus![bareJid] = true;
-                    Console.WriteLine($"[STATUS] {bareJid} sekarang ONLINE");
+                    return false; // Timeout dianggap Offline
                 }
 
-                // Agar pemrosesan stream tidak terhambat oleh antrean render UI Blazor yang berat,
-                // jalankan pembaruan UI secara asinkron tanpa ditunggu (fire-and-forget)
-                _ = InvokeAsync(StateHasChanged);
+                return await tcs.Task;
             }
-            catch (Exception ex)
+            catch
             {
-                Console.WriteLine($"Gagal memproses presence: {ex.Message}");
+                return false;
             }
-        });
+        }
     }
+
 
     private async Task RefreshTarget()
     {
-        if (UserSession.LoginStatus!.ContainsKey(JidTemanTerpilih))
+        var TemanSaatIni = UserSession.ContactsName!.FirstOrDefault(x =>
         {
-            if (UserSession.LoginStatus![JidTemanTerpilih])
+            return UserSession.Contacts![x].Contains(JidTemanTerpilih+"@openfire");
+        });
+
+        if (UserSession.LoginStatus!.ContainsKey(TemanSaatIni ?? "*=-=#"))
+        {
+            if (UserSession.LoginStatus![TemanSaatIni ?? "*=-=#"])
             {
                 TargetOnline = true;
                 await InvokeAsync(StateHasChanged);
@@ -325,7 +439,27 @@
     public void Dispose()
     {
         _disposables.Dispose();
-    }
+        _cts.Cancel();
+        _cts.Dispose();
+        try{
+            // 1. Matikan token loop milik Orang 2 sendiri agar tidak bocor memory
+     
+            // 2. TRICK UTAMA: Paksa kirim paket presence 'unavailable' ke Openfire sebelum sirkuit mati
+            string offlineXml = $"<presence from='{UserSession.Jid}' type='unavailable' />";
+            var element = System.Xml.Linq.XElement.Parse(offlineXml);
+            var xmppElement = new XmppDotNet.Xml.XmppXElement(element);
+     
+            // Kirim secara sinkronus/fire-and-forget karena Dispose tidak bisa di-await
+            _ = XmppService.SendAsync(xmppElement);
+            
+            Console.WriteLine($"{UserSession.Jid} berhasil mengirim sinyal disconnect secara paksa.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Gagal mengirim presence penutupan tab: {ex.Message}");
+        }
+    }    
+
 
     public class ModelPesan
     {

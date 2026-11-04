@@ -183,6 +183,7 @@
                     {
                         UserSession.Contacts[username] = userJid;
                         UserSession.ContactsName.Add(username);
+                        Console.WriteLine($"{userJid}");
                     }
                     UserSession.ContactsName.Sort();
                 }
