@@ -24,11 +24,12 @@
 </body>
 
 <script>
-    window.scrollToBottom = (elementId, ignorable) => {
+    window.scrollToBottom = (elementId, ignorable = false) => {
         const el = document.getElementById(elementId);
         if (el) {
+            console.log(el.scrollHeight-el.scrollTop-el.clientHeight);
             if (ignorable){
-                if ((el.scrollHeight-el.scrollTop) <= 24){
+                if ((el.scrollHeight-el.scrollTop-el.clientHeight) <= 24){
                     el.scrollTop = el.scrollHeight - el.clientHeight;
                 }
             }else{

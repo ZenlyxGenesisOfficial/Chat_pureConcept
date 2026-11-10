@@ -41,7 +41,7 @@
 @code {
     protected override void OnInitialized()
     {
-        UserSession.OnChange += refresh;
+        UserSession.OnChanged += refresh;
     }
 
     public void refresh()
@@ -51,6 +51,6 @@
 
     public void Dispose()
     {
-        UserSession.OnChange -= refresh;
+        UserSession.OnChanged -= refresh;
     }
 }

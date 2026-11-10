@@ -1,49 +1,39 @@
 ﻿@page "/"
 @using XmppDotNet
-@using System.Xml.Linq
-@using System.Reactive.Linq
 @implements IDisposable
-@inject XmppClient XmppService
+@inject chat.Session.UserSession UsrSsn
 @inject NavigationManager NavManager
-@inject chat.Session.UserSession UserSession
 @inject Microsoft.Extensions.Configuration.IConfiguration Config
 @rendermode InteractiveServer
 
 <div class="container flex justify-center items-center h-full">
     <div class="row justify-content-center w-full transform -translate-y-8">
         <div class="col-md-5">
-            <form @onsubmit="ProsesLogin" @onsubmit:preventDefault class="card shadow p-4">
+            <form @onsubmit="LoginProcess" @onsubmit:preventDefault class="card shadow p-4">
                 <h3 class="text-center mb-4">Login Openfire Chat</h3>
 
-                @if (!string.IsNullOrEmpty(PesanError))
+                @if (!string.IsNullOrEmpty(StatusMsg))
                 {
-                    <div class="alert alert-danger">@PesanError</div>
-                }
-
-                @if (!string.IsNullOrEmpty(PesanSukses))
-                {
-                    <div class="alert alert-success">@PesanSukses</div>
+                    <div class="alert @(IsError ? "alert-danger" : "alert-success")">@StatusMsg</div>
                 }
 
                 <div class="mb-3">
-                    <label class="form-label">Username / JID (Contoh: budi@@domain.Budi)</label>
-                    <input type="text" pattern="^[^\s@@]+@@[^\s@@]+$" class="form-control" @bind="InputJid" placeholder="budi@@openfire" disabled="@SedangLoading" />
+                    <label class="form-label">JID (Contoh: budi@@sub.domain.id)</label>
+                    <input type="text" pattern="^[^\s@@]+@@[^\s@@]+$" class="form-control" @bind="InputJid" placeholder="budi@@openfire" disabled="@OnLoad" />
                 </div>
 
                 <div class="mb-3">
                     <label class="form-label">Password</label>
-                    <input type="password" class="form-control" @bind="InputPassword" placeholder="******" disabled="@SedangLoading" />
+                    <input type="password" class="form-control" @bind="InputPassword" placeholder="******" disabled="@OnLoad" />
                 </div>
 
-                <button class="btn btn-primary w-100" type="submit" disabled="@SedangLoading">
-                    @if (SedangLoading)
+                <button class="btn btn-primary w-100" type="submit" disabled="@OnLoad">
+                    @if (OnLoad)
                     {
-                        <span class="spinner-border spinner-border-sm me-2"></span> <span>Menghubungkan... Status: @StatusSekarang</span>
+                        <span class="spinner-border spinner-border-sm me-2"></span>
                     }
-                    else
-                    {
-                        <span>Masuk Chat</span>
-                    }
+
+                    <span>@(OnLoad ? $"{CurState}..." : "Masuk Chat")</span>
                 </button>
             </form>
         </div>
@@ -53,152 +43,53 @@
 @code {
     private string InputJid = "";
     private string InputPassword = "";
-    private string PesanError = "";
-    private string PesanSukses = "";
-    private bool SedangLoading = false;
-    private string StatusSekarang = "";
-    private IDisposable? _subState;
+    private string StatusMsg = "";
+    private string CurState = "";
+    private bool IsError = false;
+    private bool OnLoad = false;
+    private TaskCompletionSource<bool>? _source;
 
-    private async Task ProsesLogin()
+    protected override void OnInitialized()
     {
-        if (string.IsNullOrEmpty(InputJid) || string.IsNullOrEmpty(InputPassword))
-        {
-            PesanError = "Username dan Password tidak boleh kosong!";
-            return;
-        }
-
-        PesanError = "";
-        SedangLoading = true;
-
-        _subState?.Dispose();
-        _subState = null;
-
-        try
-        {
-            XmppService.Jid = InputJid.Trim();
-            XmppService.Password = InputPassword;
-
-            _subState = XmppService.StateChanged.Subscribe(async state =>
-            {
-                StatusSekarang = state.ToString();
-                await InvokeAsync(StateHasChanged);
-
-                if (state == SessionState.Binded)
-                {
-                    PesanError = string.Empty;
-                    PesanSukses = "Login Berhasil";
-                    SedangLoading = false;
-                    await InvokeAsync(StateHasChanged);
-                    UserSession.Jid = InputJid.Trim();
-                    UserSession.Password = InputPassword;
-
-                    try
-                    {
-                        await KirimPresenceOnline();
-                    }
-                    catch (Exception exPres)
-                    {
-                        PesanError = $"Gagal kirim status online: {exPres.Message}";
-                        Console.WriteLine($"Gagal kirim status online: {exPres.Message}");
-                    }
-
-                    await InvokeAsync(StateHasChanged);
-
-                    await CariSemuaKontak();
-
-                    await Task.Delay(Convert.ToInt32(Config["WebKitX:RedirectDelay"]));
-
-                    await InvokeAsync(() =>
-                    {
-                        NavManager.NavigateTo("/chatview");
-                    });
-                }
-                else if (state == SessionState.Authenticating)
-                {
-                    SedangLoading = true;
-                    PesanError = "";
-                    PesanSukses = "Silahkan Tunggu";
-                    Console.WriteLine("Pesannya Connecting: " + PesanSukses);
-                    await InvokeAsync(StateHasChanged);
-                }
-            });
-
-            await XmppService.ConnectAsync();
-        }
-        catch (Exception ex)
-        {
-            PesanSukses = "";
-            PesanError = "Gagal terhubung. Periksa kembali kredensial atau koneksi server Openfire Anda. Pastikan Jid berformat 'username@domain' dan password sudah benar.";
-            SedangLoading = false;
-            await InvokeAsync(StateHasChanged);
-        }
+        UsrSsn.OnChanged += Refresh;
     }
 
-    private async Task KirimPresenceOnline()
+    private async Task LoginProcess()
     {
-        var presenceElement = new XmppDotNet.Xml.XmppXElement("presence");
-        var priorityElement = new XmppDotNet.Xml.XmppXElement("priority") { Value = "1" };
-        var showElement = new XmppDotNet.Xml.XmppXElement("show") { Value = "chat" };
-        presenceElement.Add(priorityElement);
-        presenceElement.Add(showElement);
-        await XmppService.SendAsync(presenceElement);
-    }
-
-    private async Task CariSemuaKontak()
-    {
-        try
+        if (!OnLoad)
         {
-            var iqRequest = new XmppDotNet.Xmpp.Client.Iq
+            _source = new TaskCompletionSource<bool>();
+            await UsrSsn.DisconnectAsync();
+            CurState = "Connecting";
+            OnLoad = true;
+            await UsrSsn.ConnectAsync(InputJid, InputPassword);
+            await _source.Task;
+            if (UsrSsn.IsConnected)
             {
-                Type = XmppDotNet.Xmpp.IqType.Get,
-                Id = $"roster_{Guid.NewGuid().ToString()[..8]}"
-            };
-
-            System.Xml.Linq.XNamespace rosterNs = "jabber:iq:roster";
-            var queryElement = new XmppDotNet.Xml.XmppXElement(rosterNs + "query");
-            iqRequest.Add(queryElement);
-
-            var responsed = await XmppService.SendIqAsync(iqRequest);
-
-            if (responsed.Type == XmppDotNet.Xmpp.IqType.Error)
-            {
-                Console.WriteLine("Gagal mengambil roster dari server.");
-                return;
+                IsError = false;
+                StatusMsg = "Login Success";
+                CurState = "Redirecting";
+                await Task.Delay(Convert.ToInt32(Config["WebKitX:RedirectDelay"]));
+                NavManager.NavigateTo("/chatview");
             }
-
-            var queryRespon = responsed.Element(rosterNs + "query");
-
-            if (queryRespon != null)
+            else
             {
-                UserSession.Contacts = new Dictionary<string, string>();
-                UserSession.ContactsName = new List<string>();
-                var items = queryRespon.Elements(rosterNs + "item");
-
-                foreach (var item in items)
-                {
-                    string userJid = item.Attribute("jid")?.Value!;
-                    string username = item.Attribute("name")?.Value ?? userJid!;
-
-                    if (!string.IsNullOrEmpty(userJid))
-                    {
-                        UserSession.Contacts[username] = userJid;
-                        UserSession.ContactsName.Add(username);
-                        Console.WriteLine($"{userJid}");
-                    }
-                    UserSession.ContactsName.Sort();
-                }
+                IsError = true;
+                StatusMsg = "There is wrong credential, Please make sure Jid and Password correctly!";
+                OnLoad = false;
             }
         }
-        catch (Exception e)
-        {
-            Console.WriteLine($"Terjadi error saat ambil roster: {e.Message}");
-        }
     }
 
-
+    private async void Refresh()
+    {
+        var stack = new System.Diagnostics.StackTrace(true);
+        InvokeAsync(StateHasChanged);
+        _source?.TrySetResult(true);
+    }
 
     public void Dispose()
     {
-        _subState?.Dispose();
+        UsrSsn.OnChanged -= Refresh;
     }
 }
