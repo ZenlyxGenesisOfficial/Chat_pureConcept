@@ -8,7 +8,7 @@
 @using XmppDotNet
 @using XmppDotNet.Xmpp
 @using XmppDotNet.Xmpp.Client;
-@implements IDisposable
+@implements IAsyncDisposable
 @inject chat.Session.UserSession UsrSsn
 @inject NavigationManager NavManager
 @inject Microsoft.Extensions.Configuration.IConfiguration Config
@@ -49,6 +49,7 @@
                     {
                         "Online" => "bg-emerald-700/80",
                         "away" => "bg-yellow-500/80",
+                        "xa" => "bg-amber-600/80",
                         "Offline" => "bg-neutral-200",
                         _ => "bg-rose-600/80"
                     };
@@ -57,13 +58,21 @@
                     {
                         "Online" => "border-white !text-white/70",
                         "away" => "border-black !text-black/70",
+                        "xa" => "border-black !text-black/80",
                         "Offline" => "!border-rose-600/80",
                         _ => "border-white !text-white/70"
                     };
 
+                    var expandState = state switch
+                    {
+                        "xa" => "Extend Away",
+                        "dnd" => "Don't Disturb",
+                        _ => state
+                    };
+
                     <div class="text-muted @bg mb-1 w-full p-1">
                         <button class="pl-1 box-border border @border w-full text-start" @onclick='() => ChooseTarget(name)'>
-                            @name <span>[@state]</span>
+                            @name <span>[@expandState]</span>
                         </button>
                     </div>
                 }
@@ -86,7 +95,7 @@
                     <div class="flex @(chat.IsMine ? "justify-end" : "justify-start")">
                         <div class="mb-2 max-w-[560px] flex flex-col @(chat.IsMine ? "items-end" : "items-start")">
                             <span class="badge size-fit @(chat.IsMine ? "bg-primary" : "bg-secondary")">
-                                @(chat.IsMine ? "Saya" : chat.Name)
+                                @(chat.IsMine ? "Saya" : chat.MyTargetFullName.Split(".")[0])
                             </span>
                             <small class="text-muted)">@chat.Time</small>
                             <p class="p-2 rounded bg-white min-w-[80px] size-fit border shadow-sm @(chat.IsMine ? "text-end" : "  text-start")">@chat.Text</p>
@@ -112,6 +121,11 @@
     private bool TargetIsOnline = false;
     private bool BtnClearType = false;
 
+    private readonly CompositeDisposable _disposables = new CompositeDisposable();
+    // private IDisposable? _presenceListener;
+
+    private List<ChatModel> ChatList = new();
+
     public List<string> ContactsList => UsrSsn.ContactsName?.Where(x =>
     {
         return (x.ToLower().Contains(TargetJidInput.ToLower())) ||
@@ -124,18 +138,13 @@
         {
             "Online" => 1,
             "away" => 2,
-            "dnd" => 3,
+            "dnd" => 4,
             "Offline" => 5,
-            _ => 4
+            _ => 3
         };
     })
     .ThenBy(x => x, StringComparer.OrdinalIgnoreCase)
     .ToList<String>() ?? new List<string>();
-
-    private List<ChatModel> ChatList = new();
-
-    private readonly CompositeDisposable _disposables = new CompositeDisposable();
-    // private IDisposable? _presenceListener;
 
     protected override async void OnInitialized()
     {
@@ -157,25 +166,60 @@
         UsrSsn.OnChanged += Refresh;
     }
 
+    // -- Window Presence --
+
+    private DotNetObjectReference<ChatView>? _selfRef;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _selfRef = DotNetObjectReference.Create(this);
+        await JS.InvokeVoidAsync("visibilityHelper.register", _selfRef);
+    }
+
+    [JSInvokable]
+    public async Task OnVisibilityChanged(string show, string status="")
+    {
+        try
+        {
+            await UsrSsn.SetPresence(show, status);
+        }
+        catch (Exception ex){ Console.WriteLine(ex); }
+    }
+
+
+    // -- UI SYSTEM --
+
     private async void WritingJid(ChangeEventArgs e)
     {
         TargetJidInput = e.Value?.ToString() ?? "";
         BtnClearType = false;
     }
+    private string FindJid(string dotFullName) => UsrSsn.Contacts.FirstOrDefault(x => x.Value.Split("@")[0] == dotFullName).Value;
 
-    private string FindJid(string dotFullName) => UsrSsn.Contacts.FirstOrDefault(x => x.Value.Contains(dotFullName)).Value;
-
-    private async void RefreshTarget(bool ignore = true)
+    private async Task RefreshTarget(bool scroll = false)
     {
-        var contact = UsrSsn.GetState(FindJid(SelectedTargetJid)).FirstOrDefault();
-        TargetIsOnline = contact.Key != "Offline";
-        TargetShowStatus = contact.Value!="Online"?contact.Value??contact.Key:"";
-        ChatList = await UsrSsn.Load(SelectedTargetJid);
-        await InvokeAsync(StateHasChanged);
-        await JS.InvokeVoidAsync("scrollToBottom", "ChatPopUp", ignore);
+        try
+        {
+            if (!string.IsNullOrEmpty(SelectedTargetJid))
+            {
+                var jid = FindJid(SelectedTargetJid);
+                var contact = UsrSsn.GetState(jid).FirstOrDefault();
+                TargetIsOnline = contact.Key != "Offline";
+                TargetShowStatus = contact.Value != "Online" ? contact.Value ?? contact.Key : "";
+                ChatList = await UsrSsn.Load(SelectedTargetJid);
+            }
+            await InvokeAsync(StateHasChanged);
+            await JS.InvokeVoidAsync("scrollToBottom", "ChatPopUp", scroll);
+        }catch(JSDisconnectedException){}
+        catch(ObjectDisposedException){}
+        catch(Exception ex)
+        {
+            Console.WriteLine("Err nih" + ex);
+        }
     }
 
-    private async void ClearOrConnect()
+    private async Task ClearOrConnect()
     {
         if (BtnClearType)
         {
@@ -186,42 +230,48 @@
         {
             SelectedTargetJid = TargetJidInput;
             BtnClearType = true;
-            RefreshTarget(false);
+            await RefreshTarget(false);
         }
     }
 
-    private async void ChooseTarget(string Name)
+    private async Task ChooseTarget(string Name)
     {
         SelectedTargetJid = UsrSsn.Contacts?[Name].Split("@")[0] ?? "";
         BtnClearType = true;
-        RefreshTarget(false);
+        await RefreshTarget(false);
     }
 
-    private async void SendMsg()
+    private async Task SendMsg()
     {
         if (string.IsNullOrEmpty(ChatInputText) || string.IsNullOrEmpty(ChatInputText)) return;
         var text = ChatInputText;
         ChatInputText = "";
         await UsrSsn.SendAsync(FindJid(SelectedTargetJid), text);
-        RefreshTarget(false);
+        await RefreshTarget(false);
     }
 
     private async void Refresh()
     {
-        RefreshTarget();
-        InvokeAsync(StateHasChanged);
+        await RefreshTarget();
     }
 
     private async Task HandleKeyDown(KeyboardEventArgs e)
     {
         if (e.Key == "Enter")
         {
-            SendMsg();
+            await SendMsg();
         }
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
+        UsrSsn.OnChanged -= Refresh;
         _disposables.Dispose();
+        try
+        {
+            await JS.InvokeVoidAsync("visibilityHelper.unregister");
+        }catch(JSDisconnectedException){}
+        catch(InvalidOperationException){}
+    _selfRef?.Dispose();
     }
 }

@@ -1,9 +1,6 @@
 using chat.Components;
 using chat.Session;
-using XmppDotNet;
-using XmppDotNet.Transport;
-using XmppDotNet.Transport.WebSocket;
-using System.Reactive.Linq;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 
 namespace chat
 {
@@ -17,19 +14,20 @@ namespace chat
             builder.Services.AddRazorComponents()
                 .AddInteractiveServerComponents();
 
-            builder.Services.AddScoped<XmppClient>(sp =>
-            {
-                var client = new XmppClient(conf =>
-                {
-                    var alamatOpenfireLocal = new Uri(builder.Configuration["OpenFire:Url"]!);
-                    conf.UseWebSocketTransport(new StaticNameResolver(alamatOpenfireLocal));
-                    conf.AutoReconnect = true;
-                });
-                return client;
+            //builder.Services.AddScoped<XmppClient>(sp =>
+            //{
+            //    var client = new XmppClient(conf =>
+            //    {
+            //        var alamatOpenfireLocal = new Uri(builder.Configuration["OpenFire:Url"]!);
+            //        conf.UseWebSocketTransport(new StaticNameResolver(alamatOpenfireLocal));
+            //        conf.AutoReconnect = true;
+            //    });
+            //    return client;
 
-            });
+            //});
 
             builder.Services.AddScoped<UserSession>();
+            builder.Services.AddScoped<CircuitHandler, SessionWebCircuit>();
 
             var app = builder.Build();
 

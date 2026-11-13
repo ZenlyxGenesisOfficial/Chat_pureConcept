@@ -37,6 +37,31 @@
             }
         }
     };
+
+    window.visibilityHelper = {
+        _handler: null,
+
+        register: function (dotnetRef){
+            this.unregister();
+            this._handler = () => {
+                var hidden = document.visibilityState === 'hidden';
+                dotnetRef.invokeMethodAsync(
+                    'OnVisibilityChanged',
+                    hidden ? 'away' : 'chat',
+                    hidden ? 'Not On The Tab' : "Online"
+                ).catch( (e) => {
+                    console.log(e);
+                });
+            }
+            document.addEventListener('visibilitychange',this._handler);
+        },
+
+        unregister: () => {
+            if (!this._handler) return;
+            document.removeEventListener('visibilitychange', this._handler);
+            this._handler = null;
+        }
+    }
 </script>
 
 </html>

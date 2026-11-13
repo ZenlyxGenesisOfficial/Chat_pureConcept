@@ -12,16 +12,10 @@
 <div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
     <nav class="nav flex-column">
         <div class="nav-item px-3">
-            @if (!string.IsNullOrEmpty(UserSession.Jid)) {
-                <NavLink class="nav-link" href="/chatview" Match="NavLinkMatch.All">
+                <NavLink class="nav-link" href="@link"
+                Match="NavLinkMatch.All">
                     <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span>Main Chat
                 </NavLink>
-            }
-            else{
-                <NavLink class="nav-link" href="/" Match="NavLinkMatch.All">
-                    <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span>Main Chat
-                </NavLink>
-            }
         </div>
 
         <div class="nav-item px-3">
@@ -39,6 +33,8 @@
 </div>
 
 @code {
+    private string link => "/" + (!string.IsNullOrEmpty(UserSession.Jid) ? "chatview" : "");
+
     protected override void OnInitialized()
     {
         UserSession.OnChanged += refresh;

@@ -13,14 +13,15 @@ using XmppDotNet.Extensions.Client.Message;
 using System.Text.Json;
 using XmppDotNet.Extensions.Client.Roster;
 using System.Reflection.Metadata.Ecma335;
+using System.Reactive.Disposables;
 
 namespace chat.Session
 {
     public class ChatModel
     {
         public string Id { get; set; }
-        public string FullName { get; set; } = "";
-        public string Name { get; set; } = "";
+        public string MyTargetJid { get; set; } = "";
+        public string MyTargetFullName { get; set; } = "";
         public bool IsMine { get; set; }
         public string Text { get; set; } = "";
         public string Time { get; set; } = "";
@@ -63,7 +64,18 @@ namespace chat.Session
 
         //UI Needed
         public event Action? OnChanged;
-        public void NotifyStateChanged() => OnChanged?.Invoke();
+        public int _presencePending;
+        public void NotifyStateChanged()
+        {
+            if (Interlocked.Exchange(ref _presencePending, 1) == 1) return;
+            _ = Task.Run(async () =>
+            {
+                Interlocked.Exchange(ref _presencePending, 0);
+                try { OnChanged?.Invoke(); }
+                catch (Exception ex) { Console.WriteLine(ex); }
+                await Task.Delay(300);
+            });
+        }
         public bool IsConnected { get; private set; }
         private readonly IJSRuntime _js;
         public UserSession(IJSRuntime js) => _js = js;
@@ -74,11 +86,13 @@ namespace chat.Session
         public Dictionary<string, string>? ContactsFullJid { get; set; } = new Dictionary<string, string>();
 
 
-        //Presence
+        //Background Thread
+        private readonly CompositeDisposable _subs = new();
 
         // -- Login --
         public async Task ConnectAsync(string jid, string password)
         {
+            _subs.Clear();
             Jid = jid.Trim();
             _password = password.Trim();
 
@@ -93,23 +107,26 @@ namespace chat.Session
                 Password = _password
             };
 
-            _client.XmppXElementReceived
+            _subs.Add(_client.XmppXElementReceived
                 .OfType<Message>()
                 .Where(m => !string.IsNullOrEmpty(m.Body))
-                .Subscribe(async m => {
+                .Subscribe(async m =>
+                {
+                    Console.WriteLine(m.ToString());
+                    var SenderJid = m.From!.ToString().Split('/')[0];
                     await Save(new ChatModel
                     {
                         Id = m.Id ?? Guid.NewGuid().ToString(),
-                        FullName = m.From!.ToString().Split('@')[0],
-                        Name = m.From!.ToString().Split('.')[0],
+                        MyTargetJid = SenderJid,
+                        MyTargetFullName = SenderJid.Split("@")[0],
                         Text = m.Body,
                         IsMine = false,
                         Time = DateTime.Now.ToString("HH:mm:ss - dd/MM/yyyy")
                     });
                     OnChanged.Invoke();
-                });
+                }));
 
-            _client.StateChanged
+            _subs.Add(_client.StateChanged
                 .Where(s => s == SessionState.Binded)
                 .Subscribe(async async =>
                 {
@@ -126,12 +143,13 @@ namespace chat.Session
                         Contacts[fullname] = jid;
                     }
                     ContactsName.Sort();
-                    await _client.SendPresenceAsync(Show.Chat, "online");
                     IsConnected = true;
+                    await SetPresence("Chat", "Online");
+                    //await _client.SendPresenceAsync(Show.Chat, "Online");
                     OnChanged.Invoke();
-                });
+                }));
 
-            _client.XmppXElementReceived
+            _subs.Add(_client.XmppXElementReceived
                 .OfType<Presence>()
                 .Subscribe(p =>
                 {
@@ -143,7 +161,7 @@ namespace chat.Session
 
                         if (bare == _jid) return;
 
-                        var type = (string?)p.Attribute("Type");
+                        var type = (string?)p.Attribute("type");
 
                         if (type != null && type != "unavailable") return;
 
@@ -159,21 +177,23 @@ namespace chat.Session
                         else
                         {
                             var show = p.Elements()
-                            .FirstOrDefault(e => e.Name.LocalName == "show")?.Value??"Online";
+                            .FirstOrDefault(e => e.Name.LocalName == "show")?.Value ?? "Online";
+
+                            show = show == "chat" ? "Online" : show;
 
                             var status = p.Elements()
                             .FirstOrDefault(e => e.Name.LocalName == "status")?.Value ?? "";
 
-                            res[resource] = new(){ { show, status } };
+                            res[resource] = new() { { show, status } };
                         }
 
-                        OnChanged?.Invoke();
+                        NotifyStateChanged();
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine($"[PRESENCE ERR] {ex.Message}");
                     }
-                });
+                }));
 
             try
             {
@@ -187,14 +207,30 @@ namespace chat.Session
             }
         }
 
+        // -- Presence Adjustment --
+        [JSInvokable]
+        public async Task SetPresence(string showStr, string?status)
+        {
+            var show = showStr.ToLower() switch
+            {
+                "chat" => Show.Chat,
+                "away" => Show.Away,
+                "xa" => Show.ExtendedAway,
+                "dnd" => Show.DoNotDisturb,
+                _ => Show.None,
+            };
+            if (_client == null || !IsConnected) return;
+            await _client.SendPresenceAsync(show, status);
+        }
+
         public async Task SendAsync(string toJid, string text)
         {
             await _client.SendChatMessageAsync(toJid, text);
             await Save(new ChatModel
             {
                 Id = Guid.NewGuid().ToString(),
-                FullName = toJid.ToString().Split('@')[0],
-                Name = _fullName,
+                MyTargetJid = toJid,
+                MyTargetFullName = toJid.Split("@")[0],
                 Text = text,
                 IsMine = true,
                 Time = DateTime.Now.ToString("HH:mm:ss - dd/MM/yyyy")
@@ -205,9 +241,8 @@ namespace chat.Session
 
         public async Task<List<ChatModel>> Load(string contact)
         {
-            var openfireContact = string.Join(".", contact.ToLower().Split(" ").Take(2));
-            Console.WriteLine(Key(openfireContact));
-            var json = await _js.InvokeAsync<string?>("localStorage.getItem", Key(openfireContact));
+            Console.WriteLine(Key(contact));
+            var json = await _js.InvokeAsync<string?>("localStorage.getItem", Key(contact));
             return string.IsNullOrEmpty(json)
                 ? new()
                 : JsonSerializer.Deserialize<List<ChatModel>>(json) ?? new();
@@ -215,16 +250,22 @@ namespace chat.Session
 
         private async Task Save(ChatModel msg)
         {
-            var list = await Load(msg.FullName);
+            var list = await Load(msg.MyTargetFullName);
             if (list.Any(x => x.Id == msg.Id)) return;
             list.Add(msg);
-            await _js.InvokeVoidAsync("localStorage.setItem", Key(msg.FullName), JsonSerializer.Serialize(list));
+            await _js.InvokeVoidAsync("localStorage.setItem", Key(msg.MyTargetFullName), JsonSerializer.Serialize(list));
         }
 
         public async Task DisconnectAsync()
         {
+            _subs.Clear();
             if (_client != null) await _client.DisconnectAsync();
             IsConnected = false;
+        }
+
+        public async ValueTask Dispose()
+        {
+            _subs.Dispose();
         }
     }
 }
