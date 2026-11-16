@@ -12,8 +12,8 @@ using XmppDotNet.Xmpp;
 using XmppDotNet.Extensions.Client.Message;
 using System.Text.Json;
 using XmppDotNet.Extensions.Client.Roster;
-using System.Reflection.Metadata.Ecma335;
 using System.Reactive.Disposables;
+using System.Xml.Linq;
 
 namespace chat.Session
 {
@@ -31,6 +31,7 @@ namespace chat.Session
         public static IConfiguration Config { get; } = new ConfigurationBuilder()
             .AddUserSecrets<Program>()
             .Build();
+
         //Client
         private XmppClient _client;
         private string _jid = string.Empty;
@@ -49,6 +50,8 @@ namespace chat.Session
             }
         }
         public string _password { get; private set; } = string.Empty;
+
+        public string MyPresenceStatus { get; set; } = string.Empty;
 
         //Presence Seeker
         public readonly Dictionary<string, Dictionary<string, Dictionary<string, string>>> _presences = new(StringComparer.OrdinalIgnoreCase);
@@ -85,6 +88,8 @@ namespace chat.Session
         public List<string>? ContactsName { get; set; } = new List<string>();
         public Dictionary<string, string>? ContactsFullJid { get; set; } = new Dictionary<string, string>();
 
+        //Chat history (cache di memori, isi awalnya diambil dari Openfire lewat MAM)
+        private readonly Dictionary<string, List<ChatModel>> _chats = new(StringComparer.OrdinalIgnoreCase);
 
         //Background Thread
         private readonly CompositeDisposable _subs = new();
@@ -93,6 +98,7 @@ namespace chat.Session
         public async Task ConnectAsync(string jid, string password)
         {
             _subs.Clear();
+            lock (_chats) { _chats.Clear(); }
             Jid = jid.Trim();
             _password = password.Trim();
 
@@ -110,11 +116,11 @@ namespace chat.Session
             _subs.Add(_client.XmppXElementReceived
                 .OfType<Message>()
                 .Where(m => !string.IsNullOrEmpty(m.Body))
-                .Subscribe(async m =>
+                .Subscribe(m =>
                 {
                     Console.WriteLine(m.ToString());
                     var SenderJid = m.From!.ToString().Split('/')[0];
-                    await Save(new ChatModel
+                    Save(new ChatModel
                     {
                         Id = m.Id ?? Guid.NewGuid().ToString(),
                         MyTargetJid = SenderJid,
@@ -209,8 +215,13 @@ namespace chat.Session
 
         // -- Presence Adjustment --
         [JSInvokable]
-        public async Task SetPresence(string showStr, string?status)
+        public async Task SetPresence(string showStr, string? status)
         {
+            Console.WriteLine($"ya: {MyPresenceStatus} || {!string.IsNullOrEmpty(MyPresenceStatus)}");
+            if (!string.IsNullOrEmpty(MyPresenceStatus))
+            {
+                status = MyPresenceStatus;
+            }
             var show = showStr.ToLower() switch
             {
                 "chat" => Show.Chat,
@@ -220,13 +231,13 @@ namespace chat.Session
                 _ => Show.None,
             };
             if (_client == null || !IsConnected) return;
-            await _client.SendPresenceAsync(show, status);
+            await _client.SendPresenceAsync(show, status??"");
         }
 
         public async Task SendAsync(string toJid, string text)
         {
             await _client.SendChatMessageAsync(toJid, text);
-            await Save(new ChatModel
+            Save(new ChatModel
             {
                 Id = Guid.NewGuid().ToString(),
                 MyTargetJid = toJid,
@@ -237,23 +248,130 @@ namespace chat.Session
             });
         }
 
-        private string Key(string contact) => $"chat@{_fullName}@{contact}";
+        // -- Chat History --
 
+        // Dipanggil widget. Pertama kali: tarik riwayat dari Openfire. Selanjutnya: ambil dari cache.
         public async Task<List<ChatModel>> Load(string contact)
         {
-            Console.WriteLine(Key(contact));
-            var json = await _js.InvokeAsync<string?>("localStorage.getItem", Key(contact));
-            return string.IsNullOrEmpty(json)
-                ? new()
-                : JsonSerializer.Deserialize<List<ChatModel>>(json) ?? new();
+            lock (_chats)
+            {
+                if (_chats.TryGetValue(contact, out var cached)) return cached.ToList();
+            }
+
+            var history = await LoadFromServer(contact);
+            if (history == null) return new List<ChatModel>();   // gagal: jangan di-cache, nanti dicoba lagi
+
+            lock (_chats)
+            {
+                if (!_chats.TryGetValue(contact, out var list))
+                {
+                    _chats[contact] = list = history;
+                }
+                return list.ToList();
+            }
         }
 
-        private async Task Save(ChatModel msg)
+        // Tambah pesan baru ke cache (hanya kalau riwayat kontak itu sudah pernah di-load)
+        private void Save(ChatModel msg)
         {
-            var list = await Load(msg.MyTargetFullName);
-            if (list.Any(x => x.Id == msg.Id)) return;
-            list.Add(msg);
-            await _js.InvokeVoidAsync("localStorage.setItem", Key(msg.MyTargetFullName), JsonSerializer.Serialize(list));
+            lock (_chats)
+            {
+                if (!_chats.TryGetValue(msg.MyTargetFullName, out var list)) return;
+                if (list.Any(x => x.Id == msg.Id)) return;
+                list.Add(msg);
+            }
+        }
+
+        // Query ke Openfire (MAM / XEP-0313): "kirim semua pesan antara saya dan kontak ini"
+        // Mengembalikan null kalau query GAGAL (beda dengan list kosong = memang belum ada chat)
+        private async Task<List<ChatModel>?> LoadFromServer(string contact)
+        {
+            var found = new List<ChatModel>();
+            if (_client == null || !IsConnected) return null;
+
+            // Pakai JID asli dari roster, kalau tidak ada baru rakit sendiri
+            var withJid = Contacts!.Values.FirstOrDefault(j => j.Split('@')[0].Equals(contact, StringComparison.OrdinalIgnoreCase))
+                          ?? (contact.Contains('@') ? contact : $"{contact}@{Config["OpenFire:Domain"]}");
+            var myBare = _jid.Split('@')[0] + "@" + Config["OpenFire:Domain"];
+            var queryId = Guid.NewGuid().ToString();
+
+            XNamespace mam = "urn:xmpp:mam:2";
+            XNamespace fwd = "urn:xmpp:forward:0";
+            XNamespace dly = "urn:xmpp:delay";
+            XNamespace dfm = "jabber:x:data";
+            XNamespace rsm = "http://jabber.org/protocol/rsm";
+
+            // Dengarkan pesan arsip yang dikirim server (datang SEBELUM IQ result)
+            using var sub = _client.XmppXElementReceived
+                .Where(e => e.Name.LocalName == "message")
+                .Subscribe(e =>
+                {
+                    var r = e.Element(mam + "result");
+                    if (r == null || (string?)r.Attribute("queryid") != queryId) return;
+
+                    var forwarded = r.Element(fwd + "forwarded");
+                    var inner = forwarded?.Elements().FirstOrDefault(x => x.Name.LocalName == "message");
+                    if (inner == null) return;
+
+                    var body = inner.Elements().FirstOrDefault(x => x.Name.LocalName == "body")?.Value;
+                    if (string.IsNullOrEmpty(body)) return;
+
+                    var from = ((string?)inner.Attribute("from") ?? "").Split('/')[0];
+                    var stamp = (string?)forwarded!.Element(dly + "delay")?.Attribute("stamp");
+                    var time = DateTimeOffset.TryParse(stamp, out var t) ? t.LocalDateTime : DateTime.Now;
+
+                    lock (found)
+                    {
+                        found.Add(new ChatModel
+                        {
+                            Id = (string?)inner.Attribute("id") ?? (string?)r.Attribute("id") ?? Guid.NewGuid().ToString(),
+                            MyTargetJid = withJid,
+                            MyTargetFullName = withJid.Split('@')[0],
+                            Text = body,
+                            IsMine = !string.Equals(from, myBare, StringComparison.OrdinalIgnoreCase),
+                            Time = time.ToString("HH:mm:ss - dd/MM/yyyy")
+                        });
+                    }
+                });
+
+            // Isi query: filter "with" = kontak ini, ambil 50 pesan terakhir
+            var query = new XElement(mam + "query",
+                new XAttribute("queryid", queryId),
+                new XElement(dfm + "x",
+                    new XAttribute("type", "submit"),
+                    new XElement(dfm + "field",
+                        new XAttribute("var", "FORM_TYPE"),
+                        new XAttribute("type", "hidden"),
+                        new XElement(dfm + "value", "urn:xmpp:mam:2")),
+                    new XElement(dfm + "field",
+                        new XAttribute("var", "with"),
+                        new XElement(dfm + "value", withJid))),
+                new XElement(rsm + "set",
+                    new XElement(rsm + "max", 50),
+                    new XElement(rsm + "before")));
+
+            try
+            {
+                var iq = new Iq { Type = IqType.Set, Id = Guid.NewGuid().ToString() };
+                iq.Add(query);
+                var res = await _client.SendIqAsync(iq);
+
+                if ((string?)res.Attribute("type") == "error")
+                {
+                    Console.WriteLine($"[MAM ERR] server menolak query: {res}");
+                    return null;
+                }
+            }
+            catch (Exception ex)
+            {
+                return null;
+            }
+
+            lock (found)
+            {
+                //Console.WriteLine($"[MAM] with={withJid}, jumlah pesan={found.Count}");
+                return found.ToList();
+            }
         }
 
         public async Task DisconnectAsync()

@@ -7,37 +7,44 @@
 @rendermode InteractiveServer
 
 <div class="container flex justify-center items-center h-full">
-    <div class="row justify-content-center w-full transform -translate-y-8">
-        <div class="col-md-5">
-            <form @onsubmit="LoginProcess" @onsubmit:preventDefault class="card shadow p-4">
-                <h3 class="text-center mb-4">Login Openfire Chat</h3>
+    @if (!UsrSsn.IsConnected)
+    {
+        <div class="row justify-content-center w-full transform -translate-y-8">
+            <div class="col-md-5">
+                <form @onsubmit="LoginProcess" @onsubmit:preventDefault class="card shadow p-4">
+                    <h3 class="text-center mb-4">Login Openfire Chat</h3>
 
-                @if (!string.IsNullOrEmpty(StatusMsg))
-                {
-                    <div class="alert @(IsError ? "alert-danger" : "alert-success")">@StatusMsg</div>
-                }
-
-                <div class="mb-3">
-                    <label class="form-label">JID (Contoh: budi@@sub.domain.id)</label>
-                    <input type="text" pattern="^[^\s@@]+@@[^\s@@]+$" class="form-control" @bind="InputJid" placeholder="budi@@openfire" disabled="@OnLoad" />
-                </div>
-
-                <div class="mb-3">
-                    <label class="form-label">Password</label>
-                    <input type="password" class="form-control" @bind="InputPassword" placeholder="******" disabled="@OnLoad" />
-                </div>
-
-                <button class="btn btn-primary w-100" type="submit" disabled="@OnLoad">
-                    @if (OnLoad)
+                    @if (!string.IsNullOrEmpty(StatusMsg))
                     {
-                        <span class="spinner-border spinner-border-sm me-2"></span>
+                        <div class="alert @(IsError ? "alert-danger" : "alert-success")">@StatusMsg</div>
                     }
 
-                    <span>@(OnLoad ? $"{CurState}..." : "Masuk Chat")</span>
-                </button>
-            </form>
+                    <div class="mb-3">
+                        <label class="form-label">JID (Contoh: budi@@sub.domain.id)</label>
+                        <input type="text" pattern="^[^\s@@]+@@[^\s@@]+$" class="form-control" @bind="InputJid" placeholder="budi@@openfire" disabled="@OnLoad" />
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Password</label>
+                        <input type="password" class="form-control" @bind="InputPassword" placeholder="******" disabled="@OnLoad" />
+                    </div>
+
+                    <button class="btn btn-primary w-100" type="submit" disabled="@OnLoad">
+                        @if (OnLoad)
+                        {
+                            <span class="spinner-border spinner-border-sm me-2"></span>
+                        }
+
+                        <span>@(OnLoad ? $"{CurState}..." : "Masuk Chat")</span>
+                    </button>
+                </form>
+            </div>
         </div>
-    </div>
+    }
+    else
+    {
+        <blockquote>Sudah Terhubung dengan Server...</blockquote>
+    }
 </div>
 
 @code {
@@ -84,7 +91,7 @@
     private async void Refresh()
     {
         var stack = new System.Diagnostics.StackTrace(true);
-        InvokeAsync(StateHasChanged);
+        await InvokeAsync(StateHasChanged);
         _source?.TrySetResult(true);
     }
 

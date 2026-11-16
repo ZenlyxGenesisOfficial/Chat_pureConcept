@@ -1,0 +1,395 @@
+﻿@using chat.Session
+@implements IDisposable
+@inject chat.Session.UserSession UsrSsn
+@inject IJSRuntime JS
+@rendermode InteractiveServer
+
+@* Widget hanya muncul kalau sudah login *@
+@if (UsrSsn.IsConnected)
+{
+    @if (isOpen)
+    {
+        <div class="fixed bottom-24 right-5 z-50 flex h-[420px] w-80 flex-col rounded-xl bg-white shadow-2xl">
+
+            <!-- Header -->
+            <div class="flex items-center justify-between rounded-t-xl bg-blue-600 px-3 py-2 text-white mb-1">
+                @if (selectedName == null)
+                {
+                    <span>Chat</span>
+                }
+                else
+                {
+                    <div class="flex items-center gap-2">
+                        <button @onclick="BackToList">←</button>
+                        <div class="leading-tight">
+                            <div>@selectedName</div>
+                            <div class="text-xs text-blue-100">@StatusLine</div>
+                        </div>
+                    </div>
+                }
+                <button @onclick="ToggleChat">✕</button>
+            </div>
+
+            @if (selectedName == null)
+            {
+                <div class="border-b p-2">
+                    <div class="relative">
+                        <input type="text" class="w-full rounded border py-1 pl-2 pr-8"
+                               placeholder="Cari nama / JID..."
+                               @bind="searchText" @bind:event="oninput" />
+
+                        @if (!string.IsNullOrEmpty(searchText))
+                        {
+                            <button class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                    @onclick="ClearSearch">✕</button>
+                        }
+                    </div>
+                </div>
+
+                var list = Contacts.ToList();
+                <div id="ContactList" class="min-h-0 flex-1 overflow-y-auto">
+                    @if (list.Count == 0)
+                    {
+                        <p class="mt-10 text-center text-gray-400">Kontak tidak ditemukan</p>
+                    }
+                    @foreach (var name in list)
+                    {
+                        <button class="flex w-full items-center gap-2 border-b px-3 py-2 text-left hover:bg-gray-100"
+                                @onclick="() => OpenChat(name)">
+                            <span class="size-3 rounded-full @DotColor(name)"></span>
+                            <span>@name</span>
+                        </button>
+                    }
+                </div>
+                <div class="border-t p-2">
+                    <label class="mb-1 block text-xs text-gray-500">Custom status</label>
+                    <div class="flex gap-2">
+                        <input type="text" class="min-w-0 flex-1 rounded border px-2 py-1"
+                               placeholder="e.g. In a meeting"
+                               value="@UsrSsn.MyPresenceStatus"
+                               @oninput="OnStatusInput" @onkeyup="StatusKey" />
+                        @if (statusLoading)
+                        {
+                            <div class="w-[56px] flex justify-center items-center">
+                                <span class="spinner-border spinner-border-sm me-2"></span>
+                            </div>
+                        }else{
+                            <button class="rounded bg-blue-600 px-3 text-white" @onclick="SetStatus">Set</button>
+                        }
+                    </div>
+                </div>
+            }
+            else
+            {
+                <!-- TAMPILAN 2: Percakapan -->
+                <div id="ChatView" class="min-h-0 flex-1 overflow-y-auto bg-gray-100 p-3">
+                    @if (messages.Count == 0)
+                    {
+                        <p class="mt-10 text-center text-gray-400">Belum ada percakapan...</p>
+                    }
+                    @{ var lastDay = ""; }
+                    @foreach (var msg in messages)
+                    {
+                        var day = DayKey(msg.Time);
+                        if (day != lastDay)
+                        {
+                            <div class="my-2 flex justify-center">
+                                <span class="rounded-full bg-gray-200 px-3 py-0.5 text-xs text-gray-600">@DayLabel(day)</span>
+                            </div>
+                            lastDay = day;
+                        }
+                        <div class="mb-2 flex @(msg.IsMine ? "justify-end" : "justify-start")">
+                            <div class="max-w-[75%] rounded-lg px-3 py-1.5 @(msg.IsMine ? "bg-blue-600 text-white" : "border bg-white")">
+                                @Emot(msg.Text)
+                            <div class="mt-0.5 text-right text-[10px] leading-none @(msg.IsMine ? "text-blue-100" : "text-gray-400")"
+                                title="@msg.Time">@msg.Time.Split(" - ")[0]
+                            </div>
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                <div class="flex gap-2 border-t p-2">
+                    <input type="text" class="flex-1 rounded border px-2 py-1"
+                           placeholder="Ketik pesan..."
+                           @bind="inputText" @onkeyup="HandleKey" />
+                    <button class="rounded bg-blue-600 px-3 text-white" @onclick="Kirim">Kirim</button>
+                </div>
+            }
+        </div>
+    }
+
+    <!-- Tombol bulat (launcher) -->
+    <button class="fixed bottom-5 right-5 z-50 size-14 !rounded-full bg-blue-600 text-2xl text-white shadow-lg"
+            @onclick="ToggleChat">
+        💬
+    </button>
+}
+
+@code {
+    public static IConfiguration Config = new ConfigurationBuilder()
+        .AddUserSecrets<Program>()
+        .Build();
+
+    private bool isOpen = false;
+    private string? selectedName = null;
+    private string fullJid = "";
+    private string inputText = "";
+    private string searchText = ""; 
+    private List<ChatModel> messages = new();
+
+    // Untuk mengingat posisi scroll daftar kontak
+    private double savedScroll = 0;
+    private bool restoreScroll = false;
+    private double chatScrollCP = 0;
+    private bool chatScroll = false;
+    private bool chatScrollIgnore = false;
+    private bool OpenChatBack = false;
+
+    // Urutan status: Online -> away -> lainnya (xa, dll) -> dnd -> Offline
+    private void ClearSearch() => searchText = "";
+
+    private static int StateOrder(string state) => state switch
+    {
+        "Online"  => 1,
+        "away"    => 2,
+        "dnd"     => 4,
+        "Offline" => 5,
+        _         => 3
+    };
+
+    // Daftar kontak: difilter by nama/JID, lalu diurutkan
+    private IEnumerable<string> Contacts
+    {
+        get
+        {
+            var q = (UsrSsn.ContactsName ?? new List<string>()).AsEnumerable();
+
+            if (!string.IsNullOrWhiteSpace(searchText))
+            {
+                var s = searchText.Trim();
+                q = q.Where(n =>
+                    n.Contains(s, StringComparison.OrdinalIgnoreCase) ||
+                    (UsrSsn.Contacts.TryGetValue(n, out var jid) &&
+                     jid.Contains(s, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            return q.OrderBy(n => StateOrder(StateOf(n)))
+                    .ThenBy(n => n, StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private string StateOf(string name) =>
+        UsrSsn.GetState(UsrSsn.Contacts[name]).FirstOrDefault().Key ?? "Offline";
+
+    // Setiap ketikan: simpan ke session (belum dikirim ke server)
+    private bool statusLoading = false;
+    private void OnStatusInput(ChangeEventArgs e) =>
+        UsrSsn.MyPresenceStatus = e.Value?.ToString() ?? "";
+
+    private async Task StatusKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await SetStatus();
+    }
+
+    // Dipakai tombol Set dan Enter: kirim presence "chat" + status custom
+    private async Task SetStatus()
+    {
+        statusLoading = true;
+        await UsrSsn.SetPresence("chat", null);
+        await Task.Delay(int.Parse(Config["WebKitX:RedirectDelay"]));
+        statusLoading = false;
+    }
+
+    private string DotColor(string name) => StateOf(name) switch
+    {
+        "Online" => "bg-emerald-500",
+        "away"   => "bg-yellow-400",
+        "xa"     => "bg-amber-600",
+        "dnd"    => "bg-rose-600",
+        _        => "bg-gray-300"
+    };
+
+    // Teks di bawah nama kontak (header percakapan): "show" atau "show - status"
+    private string StatusLine
+    {
+        get
+        {
+            if (selectedName == null) return "";
+
+            var contact = UsrSsn.GetState(fullJid).FirstOrDefault();
+            var show    = contact.Key ?? "Offline";
+            var status  = contact.Value;
+
+            var showText = show switch
+            {
+                "xa"   => "Extend Away",
+                "dnd"  => "Don't Disturb",
+                "away" => "Away",
+                _      => show
+            };
+
+            // custom = status ada isinya, bukan "Online", dan tidak sama dengan show
+            bool custom = !string.IsNullOrWhiteSpace(status)
+                          && status != "Online"
+                          && !status.Equals(show, StringComparison.OrdinalIgnoreCase);
+
+            return custom ? $"{showText} - {status}" : showText;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        UsrSsn.OnChanged += Refresh;
+    }
+
+    // Setelah render: kalau baru balik ke daftar kontak, kembalikan posisi scroll
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (restoreScroll)
+        {
+            restoreScroll = false;
+
+            try
+            {
+                await JS.InvokeVoidAsync("chatWidget.setScrollTop", "ContactList", savedScroll);
+            }
+            catch (JSDisconnectedException) { }
+        }
+
+        if (isOpen && chatScroll)
+        {
+            chatScroll = false;
+            if (OpenChatBack){
+                OpenChatBack = false;
+                await JS.InvokeVoidAsync("chatWidget.setScrollTop", "ChatView", chatScrollCP);
+            }
+            else await JS.InvokeVoidAsync("scrollToBottom", "ChatView", chatScrollIgnore);
+        }
+    }
+
+    private async Task ChatRefreshtor(bool cS = false, bool ignore = true)
+    {
+        messages = await UsrSsn.Load(fullJid.Split('@')[0]);
+        chatScroll = cS;
+        chatScrollIgnore = ignore;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ToggleChat()
+    {
+        var isOpenCP = isOpen;
+        if (isOpenCP)
+        {
+            chatScrollCP = await JS.InvokeAsync<double>("chatWidget.getScrollTop", "ChatView");
+            Console.WriteLine(chatScrollCP);
+            isOpen = !isOpen;
+        }
+        else
+        {
+            try
+            {
+                chatScroll = true;
+                OpenChatBack = true;
+                isOpen = !isOpen;
+            }catch(JSDisconnectedException){}
+        }
+    }
+
+    private async Task OpenChat(string name)
+    {
+        // Simpan posisi scroll daftar SEBELUM pindah ke percakapan
+        try
+        {
+            savedScroll = await JS.InvokeAsync<double>("chatWidget.getScrollTop", "ContactList");
+        }
+        catch (JSDisconnectedException) { }
+
+        selectedName = name;
+        chatScrollCP = 0;
+        fullJid = UsrSsn.Contacts[name];
+        await ChatRefreshtor(true, false);
+    }
+
+    private void BackToList()
+    {
+        selectedName = null;
+        messages = new();
+        restoreScroll = true;   // minta OnAfterRenderAsync mengembalikan scroll
+    }
+
+    private async Task HandleKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Kirim();
+    }
+
+    private static string DayKey(string time) => time.Split(" - ").Last();
+
+    private static string DayLabel(string dayKey)
+    {
+        var p = dayKey.Split('/');
+        var d = new DateTime(int.Parse(p[2]), int.Parse(p[1]), int.Parse(p[0]));
+
+        var diff = (DateTime.Today - d).Days;
+        return diff == 0 ? "Hari Ini"
+             : diff == 1 ? "Kemarin"
+             : dayKey;
+    }
+
+    private static readonly Dictionary<string, string> Emots = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { ">:o",     "😠" },
+        { ";-)",     "😉" },
+        { ":-[",     "😳" },
+        { "?:|",     "🤨" },
+        { "B-)",     "😎" },
+        { ":'(",     "😢" },
+        { "]:)",     "😈" },
+        { ":-D",     "😃" },
+        { ":-)",     "🙂" },
+        { ":^0",     "😲" },
+        { "(!)",     "⚠️" },
+        { ":x",      "🤐" },
+        { ";\\",     "😕" },
+        { ":-(",     "🙁" },
+        { ":|",      "😐" },
+        { ":0",      "😮" },
+        { ":-p",     "😛" },
+        { "(i)",     "💡" },
+        { "(-)",     "👎" },
+        { "(+)",     "👍" },
+        { "(heart)", "❤️" },
+    };
+
+    // Pecah teks per kata, kalau kata itu ada di kamus ganti dengan emoji-nya
+    private static string Emot(string text) =>
+        string.Join(" ", text.Split(' ').Select(w => Emots.TryGetValue(w, out var e) ? e : w));
+
+    private async Task Kirim()
+    {
+        if (string.IsNullOrWhiteSpace(inputText) || selectedName == null) return;
+
+        var teks = inputText;
+        inputText = "";
+        await UsrSsn.SendAsync(fullJid, teks);
+        await ChatRefreshtor(true, false);
+    }
+
+    // Dipanggil saat ada pesan/status baru dari UserSession
+    private async void Refresh()
+    {
+        try
+        {
+            if (selectedName != null)
+            {
+                await ChatRefreshtor();
+            }else await InvokeAsync(StateHasChanged);
+        }
+        catch (ObjectDisposedException) { }
+    }
+
+    public void Dispose()
+    {
+        UsrSsn.OnChanged -= Refresh;
+    }
+}

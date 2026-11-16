@@ -1,4 +1,7 @@
 ﻿@inherits LayoutComponentBase
+@inject IJSRuntime JS
+@inject NavigationManager NM
+@inject chat.Session.UserSession UsrSsn
 
 <div class="page">
     <div class="sidebar">
@@ -10,6 +13,12 @@
             @Body
         </article>
     </main>
+    @{
+        var path = NM.ToBaseRelativePath(NM.Uri);
+    }
+    @if (path != "chatview"){
+    <ChatWidget />
+    }
 </div>
 
 <div id="blazor-error-ui" data-nosnippet>
@@ -17,3 +26,24 @@
     <a href="." class="reload">Reload</a>
     <span class="dismiss">🗙</span>
 </div>
+
+@code{
+    private DotNetObjectReference<MainLayout>? _selfRef;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _selfRef = DotNetObjectReference.Create(this);
+        await JS.InvokeVoidAsync("visibilityHelper.register", _selfRef);
+    }
+
+    [JSInvokable]
+    public async Task OnVisibilityChanged(string show, string status="")
+    {
+        try
+        {
+            await UsrSsn.SetPresence(show, status);
+        }
+        catch (Exception ex){ Console.WriteLine(ex); }
+    }
+}

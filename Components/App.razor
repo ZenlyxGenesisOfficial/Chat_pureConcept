@@ -38,6 +38,17 @@
         }
     };
 
+    window.chatWidget = {
+        getScrollTop: (id) => {
+            const el = document.getElementById(id);
+            return el ? el.scrollTop : 0;
+        },
+        setScrollTop: (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.scrollTop = value;
+        }
+    };
+
     window.visibilityHelper = {
         _handler: null,
 
