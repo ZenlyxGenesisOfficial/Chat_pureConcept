@@ -6,11 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
     <ResourcePreloader />
-    <link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]" />
     <link rel="stylesheet" href="@Assets["app.css"]" />
     <link rel="stylesheet" href="@Assets["chat.styles.css"]" />
     <link rel="stylesheet" href="@Assets["tailwind-output.css"]" />
-<script defer src="https://cdn.jsdelivr.net/npm/@@tailwindplus/elements@1" type="module"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@@tailwindplus/elements@1" type="module"></script>
+    <link rel="stylesheet" href="@Assets["_content/BootstrapBlazor.FontAwesome/css/font-awesome.min.css"]" />
+    <link rel="stylesheet" href="@Assets["_content/BootstrapBlazor/css/bootstrap.blazor.bundle.min.css"]" />
 
     <ImportMap />
     <link rel="icon" type="image/png" href="favicon.png" />
@@ -20,59 +21,62 @@
 <body>
     <Routes @rendermode="new InteractiveServerRenderMode(prerender: false)" />
     <ReconnectModal />
+    <script src="_content/Radzen.Blazor/Radzen.Blazor.js?v=@(typeof(Radzen.Colors).Assembly.GetName().Version)"></script>
+    <script src="_content/BootstrapBlazor.SummerNote/js/jquery-3.6.0.min.js"></script>
     <script src="@Assets["_framework/blazor.web.js"]"></script>
-</body>
+    <script src="@Assets["_content/BootstrapBlazor/js/bootstrap.blazor.bundle.min.js"]"></script>
 
-<script>
-    window.scrollToBottom = (elementId, ignorable = false) => {
-        const el = document.getElementById(elementId);
-        if (el) {
-            console.log(el.scrollHeight-el.scrollTop-el.clientHeight);
-            if (ignorable){
-                if ((el.scrollHeight-el.scrollTop-el.clientHeight) <= 24){
-                    el.scrollTop = el.scrollHeight - el.clientHeight;
+    <script>
+            window.scrollToBottom = (elementId, ignorable = false) => {
+                const el = document.getElementById(elementId);
+                if (el) {
+                    console.log(el.scrollHeight - el.scrollTop - el.clientHeight);
+                    if (ignorable) {
+                        if ((el.scrollHeight - el.scrollTop - el.clientHeight) <= 24) {
+                            el.scrollTop = el.scrollHeight - el.clientHeight;
+                        }
+                    } else {
+                        el.scrollTop = el.scrollHeight - el.clientHeight;
+                    }
                 }
-            }else{
-                el.scrollTop = el.scrollHeight - el.clientHeight;
+            };
+
+            window.chatWidget = {
+                getScrollTop: (id) => {
+                    const el = document.getElementById(id);
+                    return el ? el.scrollTop : 0;
+                },
+                setScrollTop: (id, value) => {
+                    const el = document.getElementById(id);
+                    if (el) el.scrollTop = value;
+                }
+            };
+
+            window.visibilityHelper = {
+                _handler: null,
+
+                register: function (dotnetRef) {
+                    this.unregister();
+                    this._handler = () => {
+                        var hidden = document.visibilityState === 'hidden';
+                        dotnetRef.invokeMethodAsync(
+                            'OnVisibilityChanged',
+                            hidden ? 'away' : 'chat',
+                            hidden ? 'Not On The Tab' : "Online"
+                        ).catch((e) => {
+                            console.log(e);
+                        });
+                    }
+                    document.addEventListener('visibilitychange', this._handler);
+                },
+
+                unregister: () => {
+                    if (!this._handler) return;
+                    document.removeEventListener('visibilitychange', this._handler);
+                    this._handler = null;
+                }
             }
-        }
-    };
-
-    window.chatWidget = {
-        getScrollTop: (id) => {
-            const el = document.getElementById(id);
-            return el ? el.scrollTop : 0;
-        },
-        setScrollTop: (id, value) => {
-            const el = document.getElementById(id);
-            if (el) el.scrollTop = value;
-        }
-    };
-
-    window.visibilityHelper = {
-        _handler: null,
-
-        register: function (dotnetRef){
-            this.unregister();
-            this._handler = () => {
-                var hidden = document.visibilityState === 'hidden';
-                dotnetRef.invokeMethodAsync(
-                    'OnVisibilityChanged',
-                    hidden ? 'away' : 'chat',
-                    hidden ? 'Not On The Tab' : "Online"
-                ).catch( (e) => {
-                    console.log(e);
-                });
-            }
-            document.addEventListener('visibilitychange',this._handler);
-        },
-
-        unregister: () => {
-            if (!this._handler) return;
-            document.removeEventListener('visibilitychange', this._handler);
-            this._handler = null;
-        }
-    }
-</script>
+    </script>
+</body>
 
 </html>

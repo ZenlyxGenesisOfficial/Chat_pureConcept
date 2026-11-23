@@ -1,2 +1,38 @@
 ﻿@import "tailwindcss";
 @source "../**/*.razor";
+
+@layer base{
+    ul, ol {
+        list-style: revert;
+        margin: revert;
+        padding: revert;
+    }
+    li::marker {
+        color: black;
+    }
+}
+
+.msgBubble p {
+    margin: 0;
+}
+
+.EditorAbs {
+    line-height: 1.5 !important;
+}
+
+.EditorAbs .editor .note-editor .note-statusbar {
+    display: none !important;
+}
+
+.EditorAbs p {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.drpdwn-sm {
+    display: none;
+}
+
+.drpdwn-sb:focus-within .drpdwn-sm {
+    display: block;
+}

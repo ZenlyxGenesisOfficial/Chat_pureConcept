@@ -9,6 +9,10 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<PackageReference Include="BootstrapBlazor" Version="11.1.0" />
+		<PackageReference Include="BootstrapBlazor.FontAwesome" Version="11.0.0" />
+		<PackageReference Include="BootstrapBlazor.SummerNote" Version="11.0.1" />
+		<PackageReference Include="Radzen.Blazor" Version="13.1.1" />
 		<PackageReference Include="XmppDotNet" Version="3.3.0" />
 		<PackageReference Include="XmppDotNet.Extensions" Version="3.3.0" />
 		<PackageReference Include="XmppDotNet.Srv" Version="3.3.0" />

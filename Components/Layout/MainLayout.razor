@@ -8,11 +8,13 @@
         <NavMenu />
     </div>
 
-    <main class="h-screen">
-        <article class="content px-4 h-full">
-            @Body
-        </article>
-    </main>
+    <BootstrapBlazorRoot>
+        <main class="h-screen">
+            <article class="content px-4 h-full">
+                    @Body
+            </article>
+        </main>
+    </BootstrapBlazorRoot>
     @{
         var path = NM.ToBaseRelativePath(NM.Uri);
     }
@@ -44,6 +46,6 @@
         {
             await UsrSsn.SetPresence(show, status);
         }
-        catch (Exception ex){ Console.WriteLine(ex); }
+        catch (Exception ex){ System.Console.WriteLine(ex); }
     }
 }

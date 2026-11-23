@@ -1,0 +1,39 @@
+﻿<div class="@Class">
+    <Editor Value="@Value"
+            ValueChanged="@OnValueChanged"
+            IsEditor="@IsEditor"
+            ShowSubmit="false"
+            Height="@Height"
+            PlaceHolder="@PlaceHolder"
+            ToolbarItems="@ToolbarItems"/>
+
+    <button class="btn btn-primary w-[39px] h-[39px] !p-0"
+            @onclick="OnClickButton">
+        <i class="fa fa-check"></i>
+    </button>
+</div>
+
+@code {
+    [Parameter] public string? Value { get; set; }
+    [Parameter] public EventCallback<string?> ValueChanged { get; set; }
+    [Parameter] public EventCallback OnClickButton { get; set; }
+    [Parameter] public string? Class { get; set; }
+    [Parameter] public int Height { get; set; } = 80;
+    [Parameter] public string PlaceHolder { get; set; } = "Write Here...";
+    [Parameter] public bool IsEditor { get; set; } = true;
+
+    [Parameter]
+    public List<object> ToolbarItems { get; set; } = new()
+    {
+        new List<object> { "font", new List<string> { "bold", "italic", "underline", "clear" } },
+        new List<object> { "para", new List<string> { "ul", "ol" } },
+        new List<object> { "insert", new List<string> { "link" } }
+    };
+
+    private async Task OnValueChanged(string? newValue)
+    {
+        Value = newValue;
+        System.Console.WriteLine(Value);
+        await ValueChanged.InvokeAsync(newValue);
+    }
+}

@@ -150,15 +150,15 @@
     {
         if (UsrSsn.IsConnected)
         {
-            Console.WriteLine("Verifikasi berhasil");
-            Console.WriteLine("Jid: " + UsrSsn.Jid);
-            Console.WriteLine("Password: " + UsrSsn._password);
+            System.Console.WriteLine("Verifikasi berhasil");
+            System.Console.WriteLine("Jid: " + UsrSsn.Jid);
+            System.Console.WriteLine("Password: " + UsrSsn._password);
         }
         else
         {
-            Console.WriteLine("gagal king");
-            Console.WriteLine("Jid: " + UsrSsn.Jid);
-            Console.WriteLine("Password: " + UsrSsn._password);
+            System.Console.WriteLine("gagal king");
+            System.Console.WriteLine("Jid: " + UsrSsn.Jid);
+            System.Console.WriteLine("Password: " + UsrSsn._password);
             NavManager.NavigateTo("/");
             return;
         }
@@ -184,7 +184,7 @@
         {
             await UsrSsn.SetPresence(show, status);
         }
-        catch (Exception ex){ Console.WriteLine(ex); }
+        catch (Exception ex){ System.Console.WriteLine(ex); }
     }
 
 
@@ -215,7 +215,7 @@
         catch(ObjectDisposedException){}
         catch(Exception ex)
         {
-            Console.WriteLine("Err nih" + ex);
+            System.Console.WriteLine("Err nih" + ex);
         }
     }
 
@@ -272,6 +272,6 @@
             await JS.InvokeVoidAsync("visibilityHelper.unregister");
         }catch(JSDisconnectedException){}
         catch(InvalidOperationException){}
-    _selfRef?.Dispose();
+        _selfRef?.Dispose();
     }
 }
