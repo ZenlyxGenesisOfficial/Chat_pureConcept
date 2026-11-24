@@ -29,6 +29,50 @@
     margin-bottom: 0;
 }
 
+
+
+.drpdwn-sb {
+    position: relative;
+}
+
+.drpdwn-sb .dropdown-menu {
+    border: 1px solid #DBEAFE;
+    border-radius: 8px;
+    padding: 6px;
+    background: white;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, .08);
+}
+
+/* Input */
+.drpdwn-sb input {
+    width: 100%;
+    border: 1px solid #BFDBFE;
+    border-radius: 6px;
+    padding: 7px 10px;
+    outline: none;
+}
+
+.drpdwn-sb input:focus {
+    border-color: #3B82F6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, .12);
+}
+
+/* List */
+.drpdwn-sb .dropdown-menu button {
+    width: 100%;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 5px;
+    background: white;
+    color: #334155;
+    text-align: left;
+}
+
+.drpdwn-sb .dropdown-menu button:hover {
+    background: #EFF6FF;
+    color: #2563EB;
+}
+
 .drpdwn-sm {
     display: none;
 }

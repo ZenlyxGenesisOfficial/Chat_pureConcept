@@ -2,6 +2,7 @@
 @inject IJSRuntime JS
 @inject NavigationManager NM
 @inject chat.Session.UserSession UsrSsn
+@implements IAsyncDisposable
 
 <div class="page">
     <div class="sidebar">
@@ -19,7 +20,12 @@
         var path = NM.ToBaseRelativePath(NM.Uri);
     }
     @if (path != "chatview"){
-    <ChatWidget />
+        <ChatWidget />
+        foreach (var name in OpenedTab)
+        {
+            <ChatTab selectedName=@name />
+        }
+        <ChatHeads />
     }
 </div>
 
@@ -31,6 +37,21 @@
 
 @code{
     private DotNetObjectReference<MainLayout>? _selfRef;
+    private List<string> OpenedTab => UsrSsn.OpenedTab??new();
+
+    protected override void OnInitialized()
+    {
+        UsrSsn.OnCH_Changed -= Refresh;
+    }
+
+    private async void Refresh()
+    {
+        try
+        {
+            InvokeAsync(StateHasChanged);
+        }
+        catch (ObjectDisposedException) { }
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -47,5 +68,10 @@
             await UsrSsn.SetPresence(show, status);
         }
         catch (Exception ex){ System.Console.WriteLine(ex); }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        UsrSsn.OnCH_Changed -= Refresh;
     }
 }

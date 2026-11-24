@@ -36,16 +36,6 @@ namespace chat.Session
             .AddUserSecrets<Program>()
             .Build();
 
-        public const long MaxFile = 5 * 1024 * 1024;   // 5 MB
-        public static readonly string[] AllowedExt = { ".jpg", ".jpeg", ".png", ".gif", ".webp" };
-
-        // -- Jabber Protocol --
-        private const string DiscoNs = "http://jabber.org/protocol/disco#info";
-        private const string SiNs = "http://jabber.org/protocol/si";
-        private const string FtNs = "http://jabber.org/protocol/si/profile/file-transfer";
-        private const string FnNs = "http://jabber.org/protocol/feature-neg";
-        private const string IbbNs = "http://jabber.org/protocol/ibb";
-
         // -- Client --
         private XmppClient _client;
         private string _jid = string.Empty;
@@ -79,6 +69,7 @@ namespace chat.Session
 
         // -- UI Needed --
         public event Action? OnChanged;
+        public event Action? OnCH_Changed;
         public int _presencePending;
         public void NotifyStateChanged()
         {
@@ -93,31 +84,45 @@ namespace chat.Session
         }
         public bool IsConnected { get; private set; }
         private readonly IJSRuntime _js;
-        private readonly Microsoft.AspNetCore.Hosting.IWebHostEnvironment _env;
-        public UserSession(IJSRuntime js, Microsoft.AspNetCore.Hosting.IWebHostEnvironment env)
-        {
-            _js = js;
-            _env = env;
-        }
 
         // -- Contact --
-        public Dictionary<string, string>? Contacts { get; set; } = new Dictionary<string, string>();
-        public List<string>? ContactsName { get; set; } = new List<string>();
-        public Dictionary<string, string>? ContactsFullJid { get; set; } = new Dictionary<string, string>();
+        public Dictionary<string, string>? Contacts { get; set; } = new();
+        public List<string>? ContactsName { get; set; } = new();
+        public Dictionary<string, string>? ContactsFullJid { get; set; } = new();
 
         // -- Chat List --
         private readonly Dictionary<string, List<ChatModel>> _chats = new(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, string>? _chatHead = new();
+        private List<string>? _openedTab = new();
 
-        // -- Attachment --
-        private readonly Dictionary<string, List<ChatModel>> _files = new(StringComparer.OrdinalIgnoreCase);
-        private class FileIn
+        public Dictionary<string, string>? ChatHead
         {
-            public string From = "";
-            public string FileName = "";
-            public long Size;
-            public MemoryStream Data = new();
+            get => _chatHead;
+            set
+            {
+                if (value != null)
+                {
+                    foreach (var item in value)
+                        _chatHead![item.Key] = item.Value;
+                }
+
+                OnCH_Changed.Invoke();
+            }
         }
-        private readonly ConcurrentDictionary<string, FileIn> _incoming = new();
+
+        public List<string>? OpenedTab
+        {
+            get => _openedTab;
+            set
+            {
+                if (value != null)
+                {
+                    _openedTab.AddRange(value);
+                }
+
+                OnCH_Changed.Invoke();
+            }
+        }
 
         // -- Background Thread --
         private readonly CompositeDisposable _subs = new();
@@ -126,8 +131,6 @@ namespace chat.Session
         public async Task ConnectAsync(string jid, string password)
         {
             _subs.Clear();
-            lock (_chats) { _chats.Clear(); _files.Clear(); }
-            _incoming.Clear();
             Jid = jid.Trim();
             _password = password.Trim();
 
@@ -229,10 +232,6 @@ namespace chat.Session
                     }
                 }));
 
-            _subs.Add(_client.XmppXElementReceived
-                .OfType<Iq>()
-                .Subscribe(iq => _ = HandleIqAsync(iq)));
-
             try
             {
                 await _client.ConnectAsync();
@@ -262,7 +261,7 @@ namespace chat.Session
                 _ => Show.None,
             };
             if (_client == null || !IsConnected) return;
-            await _client.SendPresenceAsync(show, status ?? "");
+            await _client.SendPresenceAsync(show, status ?? "", 1);
         }
 
         // -- Sending Message --
@@ -280,216 +279,6 @@ namespace chat.Session
             });
         }
 
-        // -- Attachment Prosedure --
-        private async Task<XElement> IqAsync(string to, XElement body)
-        {
-            var iq = new Iq { Type = IqType.Set, Id = Guid.NewGuid().ToString() };
-            iq.SetAttributeValue("to", to);
-            iq.Add(body);
-            var res = await _client.SendIqAsync(iq);
-            if ((string?)res.Attribute("type") == "error") throw new Exception($"Refused: {res}");
-            return res;
-        }
-        private async Task<XElement> IqWaitAsync(Iq iq, int seconds)
-        {
-            var id = (string)iq.Attribute("id")!;
-            var tcs = new TaskCompletionSource<XElement>();
-
-            using var sub = _client.XmppXElementReceived
-                .Where(e => e.Name.LocalName == "iq"
-                         && (string?)e.Attribute("id") == id
-                         && ((string?)e.Attribute("type") == "result" || (string?)e.Attribute("type") == "error"))
-                .Subscribe(e => tcs.TrySetResult(e));
-
-            _ = _client.SendIqAsync(iq).ContinueWith(t => { _ = t.Exception; });
-
-            var done = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(seconds)));
-            if (done != tcs.Task) throw new Exception("No answer (timeout)");
-            return await tcs.Task;
-        }
-        private async Task ReplyAsync(string to, string id, XElement? body = null, string? error = null)
-        {
-            var iq = new Iq { Type = error == null ? IqType.Result : IqType.Error, Id = id };
-            iq.SetAttributeValue("to", to);
-            if (body != null) iq.Add(body);
-            if (error != null)
-                iq.Add(XElement.Parse($"<error type='cancel'><{error} xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error>"));
-            await _client.SendAsync(iq);
-        }
-        private string StoreFile(string fileName, byte[] data)
-        {
-            var id = Guid.NewGuid().ToString("N");
-            var dir = Path.Combine(_env.ContentRootPath, "uploads", id);
-            Directory.CreateDirectory(dir);
-            File.WriteAllBytes(Path.Combine(dir, fileName), data);
-            return $"/uploads/{id}/{Uri.EscapeDataString(fileName)}";
-        }
-        private void AddFileMessage(string bareJid, string url, bool mine)
-        {
-            var msg = new ChatModel
-            {
-                Id = Guid.NewGuid().ToString(),
-                MyTargetJid = bareJid,
-                MyTargetFullName = bareJid.Split('@')[0],
-                Text = url,
-                IsMine = mine,
-                Time = DateTime.Now.ToString("HH:mm:ss - dd/MM/yyyy"),
-                At = DateTime.Now
-            };
-
-            lock (_chats)
-            {
-                if (!_files.TryGetValue(msg.MyTargetFullName, out var fl))
-                    _files[msg.MyTargetFullName] = fl = new List<ChatModel>();
-                fl.Add(msg);
-
-                if (_chats.TryGetValue(msg.MyTargetFullName, out var list)) list.Add(msg);
-            }
-        }
-        public async Task SendFileAsync(string toJid, string fileName, string contentType, byte[] data)
-        {
-            var bare = toJid.Split('/')[0];
-            var resource = _presences.TryGetValue(bare, out var res) ? res.Keys.FirstOrDefault() : null;
-            if (string.IsNullOrEmpty(resource)) throw new Exception("Contact is offline");
-            var fullJid = $"{bare}/{resource}";
-            var sid = Guid.NewGuid().ToString("N");
-
-            XNamespace si = SiNs, ft = FtNs, fn = FnNs, df = "jabber:x:data", ibb = IbbNs;
-
-            var offer = new Iq { Type = IqType.Set, Id = Guid.NewGuid().ToString() };
-            offer.SetAttributeValue("to", fullJid);
-            offer.Add(new XElement(si + "si",
-                new XAttribute("id", sid),
-                new XAttribute("mime-type", contentType),
-                new XAttribute("profile", FtNs),
-                new XElement(ft + "file",
-                    new XAttribute("name", fileName),
-                    new XAttribute("size", data.Length)),
-                new XElement(fn + "feature",
-                    new XElement(df + "x",
-                        new XAttribute("type", "form"),
-                        new XElement(df + "field",
-                            new XAttribute("var", "stream-method"),
-                            new XAttribute("type", "list-single"),
-                            new XElement(df + "option",
-                                new XElement(df + "value", IbbNs)))))));
-
-            var answer = await IqWaitAsync(offer, 120);
-            if ((string?)answer.Attribute("type") == "error")
-                throw new Exception($"{bare.Split('@')[0]} declined the file");
-
-            const int block = 4096;
-            await IqAsync(fullJid, new XElement(ibb + "open",
-                new XAttribute("sid", sid),
-                new XAttribute("block-size", block),
-                new XAttribute("stanza", "iq")));
-
-            for (int i = 0, seq = 0; i < data.Length; i += block, seq++)
-            {
-                var chunk = Convert.ToBase64String(data, i, Math.Min(block, data.Length - i));
-                await IqAsync(fullJid, new XElement(ibb + "data",
-                    new XAttribute("sid", sid),
-                    new XAttribute("seq", seq),
-                    chunk));
-            }
-
-            await IqAsync(fullJid, new XElement(ibb + "close", new XAttribute("sid", sid)));
-
-            AddFileMessage(bare, StoreFile(fileName, data), true);
-        }
-        private async Task HandleIqAsync(XElement iq)
-        {
-            try
-            {
-                var type = (string?)iq.Attribute("type");
-                if (type != "get" && type != "set") return;
-
-                var id = (string?)iq.Attribute("id") ?? "";
-                var from = (string?)iq.Attribute("from") ?? "";
-                var child = iq.Elements().FirstOrDefault();
-                if (child == null || from == "") return;
-                var ns = child.Name.NamespaceName;
-
-                if (type == "get" && ns == DiscoNs && child.Attribute("node") == null)
-                {
-                    await ReplyAsync(from, id, XElement.Parse(
-                        $"<query xmlns='{DiscoNs}'>" +
-                        "<identity category='client' type='web' name='Chat Widget'/>" +
-                        $"<feature var='{DiscoNs}'/><feature var='{SiNs}'/><feature var='{FtNs}'/><feature var='{IbbNs}'/>" +
-                        "</query>"));
-                }
-                else if (type == "set" && ns == SiNs)
-                {
-                    var file = child.Descendants().FirstOrDefault(x => x.Name.LocalName == "file");
-                    var sid = (string?)child.Attribute("id") ?? "";
-                    var name = Path.GetFileName((string?)file?.Attribute("name") ?? "");
-                    long.TryParse((string?)file?.Attribute("size"), out var size);
-                    var methods = child.Descendants().Where(x => x.Name.LocalName == "value").Select(x => x.Value).ToList();
-                    var bare = from.Split('/')[0];
-
-                    var ok = sid != "" && file != null
-                          && (string?)child.Attribute("profile") == FtNs
-                          && Contacts!.Values.Any(j => j.Equals(bare, StringComparison.OrdinalIgnoreCase))
-                          && AllowedExt.Contains(Path.GetExtension(name).ToLower())
-                          && size > 0 && size <= MaxFile
-                          && methods.Contains(IbbNs);
-
-                    if (!ok)
-                    {
-                        await ReplyAsync(from, id, null, "forbidden");
-                        return;
-                    }
-
-                    _incoming[sid] = new FileIn { From = from, FileName = name, Size = size };
-                    await ReplyAsync(from, id, XElement.Parse(
-                        $"<si xmlns='{SiNs}'><feature xmlns='{FnNs}'><x xmlns='jabber:x:data' type='submit'>" +
-                        $"<field var='stream-method'><value>{IbbNs}</value></field></x></feature></si>"));
-                }
-                else if (type == "set" && ns == IbbNs)
-                {
-                    var sid = (string?)child.Attribute("sid") ?? "";
-                    if (!_incoming.TryGetValue(sid, out var f) || !f.From.Equals(from, StringComparison.OrdinalIgnoreCase))
-                    {
-                        await ReplyAsync(from, id, null, "item-not-found");
-                        return;
-                    }
-
-                    switch (child.Name.LocalName)
-                    {
-                        case "open":
-                            await ReplyAsync(from, id);
-                            break;
-
-                        case "data":
-                            f.Data.Write(Convert.FromBase64String(child.Value.Trim()));
-                            if (f.Data.Length > f.Size)
-                            {
-                                _incoming.TryRemove(sid, out _);
-                                await ReplyAsync(from, id, null, "not-acceptable");
-                                break;
-                            }
-                            await ReplyAsync(from, id);
-                            break;
-
-                        case "close":
-                            _incoming.TryRemove(sid, out _);
-                            await ReplyAsync(from, id);
-                            if (f.Data.Length > 0)
-                            {
-                                var url = StoreFile(f.FileName, f.Data.ToArray());
-                                AddFileMessage(f.From.Split('/')[0], url, false);
-                                OnChanged?.Invoke();
-                            }
-                            break;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[IQ ERR] {ex.Message}");
-            }
-        }
-
         // -- Chat History --
         public async Task<List<ChatModel>> Load(string contact)
         {
@@ -499,21 +288,7 @@ namespace chat.Session
             }
 
             var history = await LoadFromServer(contact);
-            if (history == null) return new List<ChatModel>();
-
-            lock (_chats)
-            {
-                if (!_chats.TryGetValue(contact, out var list))
-                {
-                    if (_files.TryGetValue(contact, out var fl))
-                    {
-                        history.AddRange(fl);
-                        history = history.OrderBy(x => x.At).ToList();
-                    }
-                    _chats[contact] = list = history;
-                }
-                return list.ToList();
-            }
+            return history??new List<ChatModel>();
         }
         private void Save(ChatModel msg)
         {

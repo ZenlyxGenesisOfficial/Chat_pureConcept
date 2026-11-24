@@ -1,5 +1,239 @@
-﻿<h3>ChatTab</h3>
+﻿@using chat.Session
+@inject chat.Session.UserSession UsrSsn
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+@if (UsrSsn.IsConnected && IsOpened)
+{
+    <div class="fixed bottom-24 right-5 z-50 flex h-[420px] w-80 flex-col rounded-xl bg-white shadow-2xl">
+
+        <!-- Header Section -->
+        <div class="flex items-center justify-between rounded-t-xl bg-blue-600 px-3 py-2 text-white mb-1 gap-2">
+            <div class="flex items-center gap-2 flex-1 min-w-0">
+                <button class="shrink-0" @onclick="BTL_Self">←</button>
+                <div class="flex-1 min-w-0 leading-tight">
+                    <div>@selectedName</div>
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="text-xs text-blue-100 shrink-0">@StatusLine</div>
+                        <SearchDropDown class="border bg-white/50 flex-1 min-w-0 w-full" PlaceHolder="Search another user? " />
+                    </div>
+                </div>
+            </div>
+            <button class="!p-0 shrink-0" @onclick="TC_Self">✕</button>
+        </div>
+
+        <!-- Chat Section -->
+        <div id="ChatView" class="min-h-0 flex-1 overflow-y-auto bg-gray-100 p-3">
+            @if (messages.Count == 0)
+            {
+                <p class="mt-10 text-center text-gray-400">Belum ada percakapan...</p>
+            }
+            @{
+                var lastDay = "";
+            }
+            @foreach (var msg in messages)
+            {
+                <div @key="msg.Id">
+                    @{
+                        var day = DayKey(msg.Time);
+                        if (day != lastDay)
+                        {
+                            <div class="my-2 flex justify-center">
+                                <span class="rounded-full bg-gray-200 px-3 py-0.5 text-xs text-gray-600">@DayLabel(day)</span>
+                            </div>
+                            lastDay = day;
+                        }
+                    }
+                    <div class="mb-2 flex @(msg.IsMine ? "justify-end" : "justify-start")">
+                        <div class="max-w-[75%] break-words rounded-lg px-3 py-1.5 @(msg.IsMine ? "bg-blue-600 text-white" : "border bg-white")">
+                            <div class="msgBubble whitespace-pre-wrap text-sm leading-relaxed">
+                                @Emot(msg.Text)
+                            </div>
+                            <div class="mt-1 text-right text-[10px] leading-none @(msg.IsMine ? "text-blue-100" : "text-gray-400")"
+                                 title="@msg.Time">
+                                @msg.Time.Split(" - ")[0]
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        <!-- Bottom Nav -->
+        <div class="flex gap-2 border-t p-2">
+            <TextEditor @bind-Value="inputText" Class="EditorAbs min-w-0 flex flex-1 grow gap-1 justify-content-evenly" Height="60" OnClickButton="Send" />
+        </div>
+    </div>
+}
 
 @code {
+    [Parameter] public string selectedName { get; set; } = string.Empty;
+    [Parameter] public Func<Task>? ToggleChat { get; set; }
 
+    // -- Chat Tab Identity --
+    private bool IsOpened = true;
+    private bool chatScroll = false;
+    private bool chatScrollIgnore = false;
+    private double chatScrollCP = 0;
+
+    public string inputText = string.Empty;
+
+    private string fullJidTarget
+    {
+        get
+        {
+            try
+            {
+                return UsrSsn.Contacts[selectedName];
+            }
+            catch (Exception ex)
+            {
+                System.Console.WriteLine($"si {ex}");
+                return "";
+            }
+        }
+
+        set;
+    }
+
+    private string StatusLine
+    {
+        get
+        {
+            if (selectedName == null) return "";
+
+            var contact = UsrSsn.GetState(fullJidTarget).FirstOrDefault();
+            var show = contact.Key ?? "Offline";
+            var status = contact.Value;
+
+            var showText = show switch
+            {
+                "xa" => "Extend Away",
+                "dnd" => "Don't Disturb",
+                "away" => "Away",
+                _ => show
+            };
+
+            bool custom = !string.IsNullOrWhiteSpace(status)
+                          && status != "Online"
+                          && !status.Equals(show, StringComparison.OrdinalIgnoreCase);
+
+            return custom ? $"{showText} - {status}" : showText;
+        }
+    }
+
+    // -- UI Render --
+    protected override void OnInitialized()
+    {
+        UsrSsn.OnChanged += Refresh;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (chatScroll)
+        {
+            chatScroll = false;
+            chatScrollCP = await JS.InvokeAsync<double>("chatWidget.getScrollTop", "ChatView");
+            await JS.InvokeVoidAsync("chatWidget.setScrollTop", "ChatView", chatScrollCP);
+            await JS.InvokeVoidAsync("scrollToBottom", "ChatView", chatScrollIgnore);
+        }
+    }
+
+    private async Task ChatRefreshtor(bool cS = false, bool ignore = true)
+    {
+        messages = await UsrSsn.Load(fullJidTarget.Split('@')[0]);
+        chatScroll = cS;
+        chatScrollIgnore = ignore;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async void Refresh()
+    {
+        try
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (ObjectDisposedException) { }
+    }
+
+    // -- Message Preferences --
+    public List<ChatModel> messages = new();
+
+    private static string DayKey(string time) => time.Split(" - ").Last();
+
+    private static string DayLabel(string dayKey)
+    {
+        var p = dayKey.Split('/');
+        var d = new DateTime(int.Parse(p[2]), int.Parse(p[1]), int.Parse(p[0]));
+
+        var diff = (DateTime.Today - d).Days;
+        return diff == 0 ? "Hari Ini"
+             : diff == 1 ? "Kemarin"
+             : dayKey;
+    }
+
+    private static readonly Dictionary<string, string> Emots = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { ">:o",     "😠" },
+        { ";-)",     "😉" },
+        { ":-[",     "😳" },
+        { "?:|",     "🤨" },
+        { "B-)",     "😎" },
+        { ":'(",     "😢" },
+        { "]:)",     "😈" },
+        { ":-D",     "😃" },
+        { ":-)",     "🙂" },
+        { ":^0",     "😲" },
+        { "(!)",     "⚠️" },
+        { ":x",      "🤐" },
+        { ";\\",     "😕" },
+        { ":-(",     "🙁" },
+        { ":|",      "😐" },
+        { ":0",      "😮" },
+        { ":-p",     "😛" },
+        { "(i)",     "💡" },
+        { "(-)",     "👎" },
+        { "(+)",     "👍" },
+        { "(heart)", "❤️" },
+    };
+
+    private static MarkupString Emot(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return new MarkupString("");
+
+        var hasil = string.Join(" ", text.Split(' ')
+            .Select(w => Emots.TryGetValue(w, out var e) ? e : w));
+
+        return new MarkupString(hasil);
+    }
+
+    private async Task Send()
+    {
+        System.Console.WriteLine($"ngirim nih : {inputText}");
+        if (string.IsNullOrWhiteSpace(inputText) || selectedName == null) return;
+
+        var teks = inputText;
+        await UsrSsn.SendAsync(fullJidTarget, teks);
+        inputText = "";
+        await ChatRefreshtor(true, false);
+    }
+
+    // -- Tab Services --
+    private async Task BTL_Self()
+    {
+        IsOpened = false;
+        UsrSsn.ChatHead.Add("", "");
+    }
+
+    private async Task TC_Self()
+    {
+        await ToggleChat!.Invoke();
+    }
+
+    // -- Dispose --
+    public async ValueTask DisposeAsync()
+    {
+        UsrSsn.OnChanged -= Refresh;
+    }
 }
